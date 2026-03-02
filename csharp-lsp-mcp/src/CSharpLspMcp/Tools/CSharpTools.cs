@@ -69,6 +69,14 @@ public class CSharpTools
             if (!Directory.Exists(path))
                 return $"Error: Directory does not exist: {path}";
 
+            // If LSP is already running with a different workspace, restart it
+            if (_lspClient.IsRunning && _workspacePath != null && !string.Equals(_workspacePath, path, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("Workspace changed from {Old} to {New}, restarting LSP", _workspacePath, path);
+                await _lspClient.StopAsync();
+                _openDocuments.Clear();
+            }
+
             _workspacePath = path;
 
             var started = await _lspClient.StartAsync(path, ct);
@@ -77,6 +85,22 @@ public class CSharpTools
                 return "Error: Failed to start LSP server. Make sure csharp-ls is installed: dotnet tool install --global csharp-ls";
 
             return $"Workspace set to: {path}\nLSP server started successfully.";
+        }, cancellationToken);
+    }
+
+    [McpServerTool(Name = "csharp_stop")]
+    [Description("Stop the C# LSP server to release file locks. Call this before rebuilding your project. Use csharp_set_workspace to restart it afterwards.")]
+    public Task<string> StopAsync(CancellationToken cancellationToken)
+    {
+        return ExecuteToolAsync("csharp_stop", async ct =>
+        {
+            if (!_lspClient.IsRunning)
+                return "LSP server is not running.";
+
+            await _lspClient.StopAsync();
+            _openDocuments.Clear();
+
+            return "LSP server stopped. File locks released.\nCall csharp_set_workspace to restart when ready.";
         }, cancellationToken);
     }
 

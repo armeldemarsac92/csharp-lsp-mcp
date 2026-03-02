@@ -38,6 +38,71 @@ public class LspClient : IAsyncDisposable
         _solutionFilter = solutionFilter;
     }
 
+    public bool IsRunning => _isInitialized && _lspProcess != null && !_lspProcess.HasExited;
+
+    /// <summary>
+    /// Stops the LSP server and resets state so it can be restarted with StartAsync.
+    /// </summary>
+    public async Task StopAsync()
+    {
+        await _initLock.WaitAsync();
+        try
+        {
+            if (!_isInitialized && _lspProcess == null)
+                return;
+
+            _logger.LogInformation("Stopping LSP server...");
+
+            _readLoopCts?.Cancel();
+
+            if (_readLoopTask != null)
+            {
+                try
+                {
+                    await _readLoopTask.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch { }
+            }
+
+            if (_lspProcess != null && !_lspProcess.HasExited)
+            {
+                try
+                {
+                    await SendRequestAsync<object>("shutdown", null, CancellationToken.None);
+                    await SendNotificationAsync("exit", null, CancellationToken.None);
+
+                    if (!_lspProcess.WaitForExit(3000))
+                        _lspProcess.Kill();
+                }
+                catch
+                {
+                    try { _lspProcess.Kill(); } catch { }
+                }
+            }
+
+            _lspProcess?.Dispose();
+            _readLoopCts?.Dispose();
+
+            _lspProcess = null;
+            _outputStream = null;
+            _readLoopCts = null;
+            _readLoopTask = null;
+            _isInitialized = false;
+            _filteredWorkspacePath = null;
+            _requestId = 0;
+            _pendingRequests.Clear();
+            _diagnosticsCache.Clear();
+
+            _solutionFilter.Cleanup();
+
+            _logger.LogInformation("LSP server stopped.");
+        }
+        finally
+        {
+            _initLock.Release();
+        }
+    }
+
     public async Task<bool> StartAsync(string? workspacePath = null, CancellationToken cancellationToken = default)
     {
         await _initLock.WaitAsync(cancellationToken);

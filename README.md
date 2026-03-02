@@ -21,6 +21,7 @@ An MCP (Model Context Protocol) server that provides C# and XAML language intell
 - **Document Symbols** - List all symbols in a file
 - **Code Actions** - Access quick fixes and refactorings
 - **Rename Preview** - Preview symbol renames across the workspace
+- **Stop/Restart** - Stop the LSP server to release file locks before rebuilding
 
 ### XAML Analysis (built-in)
 - **Validation** - Check XAML for errors and issues
@@ -112,6 +113,16 @@ Before using C# tools, set the workspace directory:
 Use csharp_set_workspace with path: "C:/path/to/your/solution"
 ```
 
+### Stopping the LSP for Rebuilds
+
+The LSP server holds file locks on project DLLs. To rebuild your project, stop the server first:
+
+```
+Stop the C# LSP server so I can rebuild
+```
+
+After rebuilding, call `csharp_set_workspace` again to restart it. Switching workspaces via `csharp_set_workspace` automatically restarts the server.
+
 ### Example Interactions
 
 **Get diagnostics for a file:**
@@ -138,7 +149,8 @@ Show me all data bindings in MainWindow.xaml
 
 | Tool | Description |
 |------|-------------|
-| `csharp_set_workspace` | Set the solution/project directory |
+| `csharp_set_workspace` | Set the solution/project directory (restarts LSP if workspace changes) |
+| `csharp_stop` | Stop the LSP server to release file locks for rebuilding |
 | `csharp_diagnostics` | Get compiler errors and warnings |
 | `csharp_hover` | Get type info at a position |
 | `csharp_completions` | Get IntelliSense completions |
