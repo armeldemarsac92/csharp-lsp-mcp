@@ -14,7 +14,7 @@ public class LspClient : IAsyncDisposable
     private Process? _lspProcess;
     private Stream? _outputStream;
     private int _requestId;
-    private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pendingRequests = new();
+    private readonly ConcurrentDictionary<int, PendingRequest> _pendingRequests = new();
     private readonly ConcurrentDictionary<string, PublishDiagnosticsParams> _diagnosticsCache = new();
     private CancellationTokenSource? _readLoopCts;
     private Task? _readLoopTask;
@@ -22,6 +22,7 @@ public class LspClient : IAsyncDisposable
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private string? _filteredWorkspacePath;
+    private string? _workspacePath;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -31,6 +32,11 @@ public class LspClient : IAsyncDisposable
     };
 
     public event Action<PublishDiagnosticsParams>? DiagnosticsReceived;
+
+    private sealed record PendingRequest(
+        string Method,
+        DateTimeOffset StartedAt,
+        TaskCompletionSource<JsonElement> CompletionSource);
 
     public LspClient(ILogger<LspClient> logger, SolutionFilter solutionFilter)
     {
@@ -52,17 +58,8 @@ public class LspClient : IAsyncDisposable
                 return;
 
             _logger.LogInformation("Stopping LSP server...");
-
-            _readLoopCts?.Cancel();
-
-            if (_readLoopTask != null)
-            {
-                try
-                {
-                    await _readLoopTask.WaitAsync(TimeSpan.FromSeconds(5));
-                }
-                catch { }
-            }
+            var readLoopCts = _readLoopCts;
+            var readLoopTask = _readLoopTask;
 
             if (_lspProcess != null && !_lspProcess.HasExited)
             {
@@ -80,6 +77,17 @@ public class LspClient : IAsyncDisposable
                 }
             }
 
+            readLoopCts?.Cancel();
+
+            if (readLoopTask != null)
+            {
+                try
+                {
+                    await readLoopTask.WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch { }
+            }
+
             _lspProcess?.Dispose();
             _readLoopCts?.Dispose();
 
@@ -89,6 +97,7 @@ public class LspClient : IAsyncDisposable
             _readLoopTask = null;
             _isInitialized = false;
             _filteredWorkspacePath = null;
+            _workspacePath = null;
             _requestId = 0;
             _pendingRequests.Clear();
             _diagnosticsCache.Clear();
@@ -111,6 +120,8 @@ public class LspClient : IAsyncDisposable
             if (_isInitialized)
                 return true;
 
+            _workspacePath = workspacePath;
+
             // Try to find csharp-ls
             var lspPath = await FindLspServerAsync(cancellationToken);
             if (lspPath == null)
@@ -119,30 +130,32 @@ public class LspClient : IAsyncDisposable
                 return false;
             }
 
-            // Filter the solution to exclude unsupported project types
-            var effectiveWorkspacePath = workspacePath;
+            string? effectiveWorkspacePath = workspacePath;
+            string? launchWorkingDirectory = workspacePath;
+            string? launchSolutionPath = null;
+
+            // Resolve the specific workspace context we should launch csharp-ls against.
             if (workspacePath != null)
             {
-                _filteredWorkspacePath = _solutionFilter.GetFilteredWorkspacePath(workspacePath);
-                if (_filteredWorkspacePath != workspacePath)
+                var launchContext = _solutionFilter.ResolveWorkspaceLaunchContext(workspacePath);
+                launchWorkingDirectory = launchContext.WorkingDirectory;
+                launchSolutionPath = launchContext.SolutionPath;
+                _filteredWorkspacePath = !string.Equals(launchWorkingDirectory, workspacePath, StringComparison.Ordinal)
+                    ? launchWorkingDirectory
+                    : null;
+
+                if (_filteredWorkspacePath != null)
                 {
                     _logger.LogInformation("Using filtered workspace: {Path}", _filteredWorkspacePath);
-                    effectiveWorkspacePath = _filteredWorkspacePath;
                 }
+
+                if (!string.IsNullOrWhiteSpace(launchSolutionPath))
+                    _logger.LogInformation("Launching csharp-ls with solution: {Path}", launchSolutionPath);
             }
 
             _logger.LogInformation("Starting LSP server: {Path}", lspPath);
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = lspPath,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                // Don't set encoding - we write bytes directly to avoid BOM issues
-            };
+            var startInfo = CreateStartInfo(lspPath, launchWorkingDirectory, launchSolutionPath);
 
             _lspProcess = new Process { StartInfo = startInfo };
             _lspProcess.ErrorDataReceived += (_, e) =>
@@ -246,6 +259,34 @@ public class LspClient : IAsyncDisposable
         }
 
         return null;
+    }
+
+    private static ProcessStartInfo CreateStartInfo(string lspPath, string? workingDirectory, string? solutionPath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = lspPath,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            // Don't set encoding - we write bytes directly to avoid BOM issues
+        };
+
+        if (!string.IsNullOrWhiteSpace(workingDirectory))
+            startInfo.WorkingDirectory = workingDirectory;
+
+        if (!string.IsNullOrWhiteSpace(solutionPath))
+        {
+            startInfo.ArgumentList.Add("--solution");
+            startInfo.ArgumentList.Add(
+                !string.IsNullOrWhiteSpace(startInfo.WorkingDirectory)
+                    ? Path.GetRelativePath(startInfo.WorkingDirectory, solutionPath)
+                    : solutionPath);
+        }
+
+        return startInfo;
     }
 
     private async Task<InitializeResult?> InitializeAsync(string? workspacePath, CancellationToken cancellationToken)
@@ -496,8 +537,11 @@ public class LspClient : IAsyncDisposable
             Params = @params
         };
 
-        var tcs = new TaskCompletionSource<JsonElement>();
-        _pendingRequests[id] = tcs;
+        var pendingRequest = new PendingRequest(
+            method,
+            DateTimeOffset.UtcNow,
+            new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously));
+        _pendingRequests[id] = pendingRequest;
 
         try
         {
@@ -508,12 +552,32 @@ public class LspClient : IAsyncDisposable
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(120));
 
-            var result = await tcs.Task.WaitAsync(cts.Token);
+            var result = await pendingRequest.CompletionSource.Task.WaitAsync(cts.Token);
+            _logger.LogDebug(
+                "SendRequestAsync: Completed request id={Id} method={Method} after {ElapsedMs}ms",
+                id,
+                method,
+                (DateTimeOffset.UtcNow - pendingRequest.StartedAt).TotalMilliseconds);
 
             if (result.ValueKind == JsonValueKind.Null || result.ValueKind == JsonValueKind.Undefined)
                 return default;
 
             return result.Deserialize<T>(JsonOptions);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug("SendRequestAsync: Request id={Id} method={Method} was cancelled by caller", id, method);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "SendRequestAsync: Request id={Id} method={Method} timed out after waiting {ElapsedMs}ms. Pending requests: {PendingCount}",
+                id,
+                method,
+                (DateTimeOffset.UtcNow - pendingRequest.StartedAt).TotalMilliseconds,
+                _pendingRequests.Count);
+            throw;
         }
         finally
         {
@@ -592,7 +656,7 @@ public class LspClient : IAsyncDisposable
                 _logger.LogTrace("Received: {Message}", json);
                 _logger.LogDebug("ReadLoopAsync: Received message, length={Length}", json.Length);
 
-                ProcessMessage(json);
+                await ProcessMessageAsync(json, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -607,49 +671,62 @@ public class LspClient : IAsyncDisposable
         _logger.LogDebug("ReadLoopAsync: Exiting read loop");
     }
 
-    private void ProcessMessage(string json)
+    private async Task ProcessMessageAsync(string json, CancellationToken cancellationToken)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
+            if (root.TryGetProperty("method", out var methodElement))
+            {
+                var method = methodElement.GetString();
+
+                if (root.TryGetProperty("id", out var requestIdElement))
+                {
+                    await HandleServerRequestAsync(
+                        requestIdElement.Clone(),
+                        method,
+                        root.TryGetProperty("params", out var requestParams) ? requestParams.Clone() : (JsonElement?)null,
+                        cancellationToken);
+                    return;
+                }
+
+                HandleNotification(method, root);
+                return;
+            }
+
             if (root.TryGetProperty("id", out var idElement))
             {
-                // Response to a request
-                var id = idElement.GetInt32();
-                if (_pendingRequests.TryGetValue(id, out var tcs))
+                if (!TryGetRequestId(idElement, out var id))
                 {
-                    if (root.TryGetProperty("error", out var error))
-                    {
-                        var errorMsg = error.GetProperty("message").GetString();
-                        _logger.LogError("LSP error: {Error}", errorMsg);
-                        tcs.TrySetException(new Exception($"LSP error: {errorMsg}"));
-                    }
-                    else if (root.TryGetProperty("result", out var result))
-                    {
-                        tcs.TrySetResult(result.Clone());
-                    }
-                    else
-                    {
-                        tcs.TrySetResult(default);
-                    }
+                    _logger.LogWarning("Received response with unsupported id payload: {Id}", idElement.GetRawText());
+                    return;
                 }
-            }
-            else if (root.TryGetProperty("method", out var methodElement))
-            {
-                // Notification from server
-                var method = methodElement.GetString();
-                if (method == "textDocument/publishDiagnostics" && root.TryGetProperty("params", out var @params))
+
+                if (!_pendingRequests.TryGetValue(id, out var pendingRequest))
                 {
-                    var diagnostics = @params.Deserialize<PublishDiagnosticsParams>(JsonOptions);
-                    if (diagnostics != null)
-                    {
-                        _diagnosticsCache[diagnostics.Uri] = diagnostics;
-                        DiagnosticsReceived?.Invoke(diagnostics);
-                        _logger.LogDebug("Received {Count} diagnostics for {Uri}",
-                            diagnostics.Diagnostics.Length, diagnostics.Uri);
-                    }
+                    _logger.LogDebug("Received response id={Id} but no pending request matched it", id);
+                    return;
+                }
+
+                _logger.LogDebug("Received response id={Id} for method={Method}", id, pendingRequest.Method);
+
+                if (root.TryGetProperty("error", out var error))
+                {
+                    var errorMsg = error.GetProperty("message").GetString();
+                    _logger.LogError("LSP error for request id={Id} method={Method}: {Error}", id, pendingRequest.Method, errorMsg);
+                    pendingRequest.CompletionSource.TrySetException(new Exception($"LSP error: {errorMsg}"));
+                }
+                else if (root.TryGetProperty("result", out var result))
+                {
+                    pendingRequest.CompletionSource.TrySetResult(result.Clone());
+                    _logger.LogDebug("Resolved request id={Id} method={Method}", id, pendingRequest.Method);
+                }
+                else
+                {
+                    pendingRequest.CompletionSource.TrySetResult(default);
+                    _logger.LogDebug("Resolved request id={Id} method={Method} with empty result", id, pendingRequest.Method);
                 }
             }
         }
@@ -657,6 +734,128 @@ public class LspClient : IAsyncDisposable
         {
             _logger.LogError(ex, "Error processing LSP message");
         }
+    }
+
+    private void HandleNotification(string? method, JsonElement root)
+    {
+        if (method == "textDocument/publishDiagnostics" && root.TryGetProperty("params", out var @params))
+        {
+            var diagnostics = @params.Deserialize<PublishDiagnosticsParams>(JsonOptions);
+            if (diagnostics != null)
+            {
+                _diagnosticsCache[diagnostics.Uri] = diagnostics;
+                DiagnosticsReceived?.Invoke(diagnostics);
+                _logger.LogDebug("Received {Count} diagnostics for {Uri}",
+                    diagnostics.Diagnostics.Length, diagnostics.Uri);
+            }
+
+            return;
+        }
+
+        _logger.LogDebug("Ignoring server notification method={Method}", method);
+    }
+
+    private async Task HandleServerRequestAsync(JsonElement requestId, string? method, JsonElement? @params, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(method))
+        {
+            _logger.LogWarning("Received server request with no method. Id={Id}", requestId.GetRawText());
+            return;
+        }
+
+        _logger.LogDebug("Received server request id={Id} method={Method}", requestId.GetRawText(), method);
+
+        try
+        {
+            var result = CreateServerRequestResult(method, @params);
+            await SendMessageAsync(
+                new JsonRpcSuccessResponse
+                {
+                    Id = requestId,
+                    Result = result
+                },
+                cancellationToken);
+            _logger.LogDebug("Responded to server request id={Id} method={Method}", requestId.GetRawText(), method);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to handle server request id={Id} method={Method}", requestId.GetRawText(), method);
+            await SendMessageAsync(
+                new JsonRpcErrorResponse
+                {
+                    Id = requestId,
+                    Error = new JsonRpcError
+                    {
+                        Code = -32603,
+                        Message = ex.Message
+                    }
+                },
+                cancellationToken);
+        }
+    }
+
+    private object? CreateServerRequestResult(string method, JsonElement? @params)
+    {
+        switch (method)
+        {
+            case "client/registerCapability":
+            case "client/unregisterCapability":
+            case "window/workDoneProgress/create":
+                return null;
+
+            case "workspace/configuration":
+                return CreateWorkspaceConfigurationResult(@params);
+
+            case "workspace/workspaceFolders":
+                if (string.IsNullOrWhiteSpace(_workspacePath))
+                    return null;
+
+                return new[]
+                {
+                    new WorkspaceFolder
+                    {
+                        Uri = new Uri(_workspacePath).ToString(),
+                        Name = Path.GetFileName(_workspacePath)
+                    }
+                };
+
+            default:
+                _logger.LogWarning("Received unsupported server request method={Method}; responding with null", method);
+                return null;
+        }
+    }
+
+    private static object?[] CreateWorkspaceConfigurationResult(JsonElement? @params)
+    {
+        if (@params is null ||
+            !@params.Value.TryGetProperty("items", out var items) ||
+            items.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<object?>();
+        }
+
+        var results = new object?[items.GetArrayLength()];
+        for (var i = 0; i < results.Length; i++)
+        {
+            results[i] = new Dictionary<string, object?>();
+        }
+
+        return results;
+    }
+
+    private static bool TryGetRequestId(JsonElement idElement, out int id)
+    {
+        if (idElement.ValueKind == JsonValueKind.Number)
+            return idElement.TryGetInt32(out id);
+
+        if (idElement.ValueKind == JsonValueKind.String &&
+            int.TryParse(idElement.GetString(), out id))
+        {
+            return true;
+        }
+
+        id = default;
+        return false;
     }
 
     private static async Task<int?> ReadContentLengthAsync(Stream stream, CancellationToken cancellationToken)
@@ -746,20 +945,13 @@ public class LspClient : IAsyncDisposable
         _readLoopCts = null;
         _readLoopTask = null;
         _lspProcess = null;
+        _workspacePath = null;
     }
 
     public async ValueTask DisposeAsync()
     {
-        _readLoopCts?.Cancel();
-
-        if (_readLoopTask != null)
-        {
-            try
-            {
-                await _readLoopTask.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch { }
-        }
+        var readLoopCts = _readLoopCts;
+        var readLoopTask = _readLoopTask;
 
         if (_lspProcess != null && !_lspProcess.HasExited)
         {
@@ -771,6 +963,17 @@ public class LspClient : IAsyncDisposable
 
                 if (!_lspProcess.WaitForExit(3000))
                     _lspProcess.Kill();
+            }
+            catch { }
+        }
+
+        readLoopCts?.Cancel();
+
+        if (readLoopTask != null)
+        {
+            try
+            {
+                await readLoopTask.WaitAsync(TimeSpan.FromSeconds(5));
             }
             catch { }
         }

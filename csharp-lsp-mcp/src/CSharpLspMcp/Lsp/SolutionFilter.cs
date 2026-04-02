@@ -10,6 +10,8 @@ namespace CSharpLspMcp.Lsp;
 /// </summary>
 public partial class SolutionFilter
 {
+    public sealed record WorkspaceLaunchContext(string WorkingDirectory, string? SolutionPath);
+
     private readonly ILogger<SolutionFilter> _logger;
     private string? _filteredSlnPath;
 
@@ -39,17 +41,26 @@ public partial class SolutionFilter
     }
 
     /// <summary>
-    /// Finds the first .sln file in the specified directory.
+    /// Finds the preferred solution file in the specified directory.
     /// </summary>
     public string? FindSolutionFile(string workspacePath)
     {
         if (!Directory.Exists(workspacePath))
             return null;
 
-        var slnFiles = Directory.GetFiles(workspacePath, "*.sln", SearchOption.TopDirectoryOnly);
-        // Prefer non-filtered solutions
-        return slnFiles.FirstOrDefault(f => !f.EndsWith(".filtered.sln", StringComparison.OrdinalIgnoreCase))
-            ?? slnFiles.FirstOrDefault();
+        var slnFiles = Directory.GetFiles(workspacePath, "*.sln", SearchOption.TopDirectoryOnly)
+            .OrderBy(path => path.EndsWith(".filtered.sln", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (slnFiles.Length > 0)
+        {
+            // Prefer non-filtered .sln files so we can filter unsupported project types if needed.
+            return slnFiles.FirstOrDefault(f => !f.EndsWith(".filtered.sln", StringComparison.OrdinalIgnoreCase))
+                ?? slnFiles.First();
+        }
+
+        var slnxFiles = Directory.GetFiles(workspacePath, "*.slnx", SearchOption.TopDirectoryOnly);
+        return slnxFiles.FirstOrDefault();
     }
 
     /// <summary>
@@ -196,28 +207,37 @@ public partial class SolutionFilter
     }
 
     /// <summary>
+    /// Resolves the working directory and solution file path to use when launching csharp-ls.
+    /// </summary>
+    public WorkspaceLaunchContext ResolveWorkspaceLaunchContext(string workspacePath, ISet<string>? excludedExtensions = null)
+    {
+        var slnPath = FindSolutionFile(workspacePath);
+        if (slnPath == null)
+        {
+            _logger.LogDebug("No solution file found in {Path}, using original workspace", workspacePath);
+            return new WorkspaceLaunchContext(workspacePath, null);
+        }
+
+        if (Path.GetExtension(slnPath).Equals(".sln", StringComparison.OrdinalIgnoreCase))
+        {
+            var filteredSlnPath = CreateFilteredSolution(slnPath, excludedExtensions);
+            if (filteredSlnPath != null)
+            {
+                return new WorkspaceLaunchContext(Path.GetDirectoryName(filteredSlnPath)!, filteredSlnPath);
+            }
+        }
+
+        return new WorkspaceLaunchContext(Path.GetDirectoryName(slnPath) ?? workspacePath, slnPath);
+    }
+
+    /// <summary>
     /// Gets a workspace path that can be used with csharp-ls.
     /// If the workspace contains a solution with unsupported projects, creates a filtered solution
     /// in a temp directory with absolute paths and returns that path.
     /// </summary>
     public string GetFilteredWorkspacePath(string workspacePath, ISet<string>? excludedExtensions = null)
     {
-        var slnPath = FindSolutionFile(workspacePath);
-        if (slnPath == null)
-        {
-            _logger.LogDebug("No solution file found in {Path}, using original workspace", workspacePath);
-            return workspacePath;
-        }
-
-        var filteredSlnPath = CreateFilteredSolution(slnPath, excludedExtensions);
-        if (filteredSlnPath == null)
-        {
-            _logger.LogDebug("No filtering needed for solution, using original workspace");
-            return workspacePath;
-        }
-
-        // Return the directory containing the filtered solution
-        return Path.GetDirectoryName(filteredSlnPath)!;
+        return ResolveWorkspaceLaunchContext(workspacePath, excludedExtensions).WorkingDirectory;
     }
 
     /// <summary>

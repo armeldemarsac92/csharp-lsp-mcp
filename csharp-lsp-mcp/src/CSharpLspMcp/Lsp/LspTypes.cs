@@ -25,13 +25,32 @@ public record JsonRpcRequest : JsonRpcMessage
 public record JsonRpcResponse : JsonRpcMessage
 {
     [JsonPropertyName("id")]
-    public int? Id { get; init; }
+    public object? Id { get; init; }
 
     [JsonPropertyName("result")]
     public object? Result { get; init; }
 
     [JsonPropertyName("error")]
     public JsonRpcError? Error { get; init; }
+}
+
+public record JsonRpcSuccessResponse : JsonRpcMessage
+{
+    [JsonPropertyName("id")]
+    public object? Id { get; init; }
+
+    [JsonPropertyName("result")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public object? Result { get; init; }
+}
+
+public record JsonRpcErrorResponse : JsonRpcMessage
+{
+    [JsonPropertyName("id")]
+    public object? Id { get; init; }
+
+    [JsonPropertyName("error")]
+    public required JsonRpcError Error { get; init; }
 }
 
 public record JsonRpcNotification : JsonRpcMessage

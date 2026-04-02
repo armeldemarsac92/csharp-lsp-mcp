@@ -422,23 +422,28 @@ public class CSharpTools
             }
         }
 
-        content ??= await File.ReadAllTextAsync(filePath, ct);
+        var effectiveContent = ShouldReadContentFromDisk(content)
+            ? await File.ReadAllTextAsync(filePath, ct)
+            : content!;
 
         if (_openDocuments.TryGetValue(filePath, out var state))
         {
-            if (state.Content != content)
+            if (state.Content != effectiveContent)
             {
-                state.Content = content;
+                state.Content = effectiveContent;
                 state.Version++;
-                await _lspClient.UpdateDocumentAsync(filePath, content, state.Version, ct);
+                await _lspClient.UpdateDocumentAsync(filePath, effectiveContent, state.Version, ct);
             }
         }
         else
         {
-            await _lspClient.OpenDocumentAsync(filePath, content, ct);
-            _openDocuments[filePath] = new DocumentState { Content = content, Version = 1 };
+            await _lspClient.OpenDocumentAsync(filePath, effectiveContent, ct);
+            _openDocuments[filePath] = new DocumentState { Content = effectiveContent, Version = 1 };
         }
     }
+
+    private static bool ShouldReadContentFromDisk(string? content)
+        => string.IsNullOrEmpty(content);
 
     private string GetAbsolutePath(string path)
     {
