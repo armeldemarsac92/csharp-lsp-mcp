@@ -109,6 +109,46 @@ public class LspClientTests
         Assert.False(InvokeTryGetRequestId(invalidDoc.RootElement.Clone(), out _));
     }
 
+    [Fact]
+    public void ParseLocationArrayResult_HandlesLocationLinks()
+    {
+        using var doc = JsonDocument.Parse("""
+            [
+              {
+                "targetUri": "file:///tmp/Impl.cs",
+                "targetRange": {
+                  "start": { "line": 4, "character": 2 },
+                  "end": { "line": 4, "character": 18 }
+                },
+                "targetSelectionRange": {
+                  "start": { "line": 4, "character": 6 },
+                  "end": { "line": 4, "character": 18 }
+                }
+              }
+            ]
+            """);
+
+        var locations = InvokeParseLocationArrayResult(doc.RootElement.Clone());
+
+        Assert.NotNull(locations);
+        var location = Assert.Single(locations);
+        Assert.Equal("file:///tmp/Impl.cs", location.Uri);
+        Assert.Equal(4, location.Range.Start.Line);
+        Assert.Equal(6, location.Range.Start.Character);
+    }
+
+    [Fact]
+    public void IsProviderSupported_TreatsObjectsAsSupported()
+    {
+        using var objectDoc = JsonDocument.Parse("{\"resolveProvider\":true}");
+        using var falseDoc = JsonDocument.Parse("false");
+
+        Assert.True(InvokeIsProviderSupported(objectDoc.RootElement.Clone()));
+        Assert.True(InvokeIsProviderSupported(true));
+        Assert.False(InvokeIsProviderSupported(falseDoc.RootElement.Clone()));
+        Assert.False(InvokeIsProviderSupported(null));
+    }
+
     private static Task<int?> InvokeReadContentLengthAsync(Stream stream)
     {
         var method = typeof(LspClient).GetMethod(
@@ -167,6 +207,26 @@ public class LspClientTests
         var result = (bool)method.Invoke(null, args)!;
         id = (int)args[1]!;
         return result;
+    }
+
+    private static Location[]? InvokeParseLocationArrayResult(JsonElement result)
+    {
+        var method = typeof(LspClient).GetMethod(
+            "ParseLocationArrayResult",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        return (Location[]?)method.Invoke(null, new object?[] { result });
+    }
+
+    private static bool InvokeIsProviderSupported(object? provider)
+    {
+        var method = typeof(LspClient).GetMethod(
+            "IsProviderSupported",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        return (bool)method.Invoke(null, new[] { provider })!;
     }
 
     private static JsonSerializerOptions CreateClientJsonOptions()

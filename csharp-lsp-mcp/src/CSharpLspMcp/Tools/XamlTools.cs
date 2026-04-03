@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text;
+using CSharpLspMcp.Workspace;
 using CSharpLspMcp.Xaml;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
@@ -15,18 +16,14 @@ public class XamlTools
     private readonly ILogger<XamlTools> _logger;
     private readonly XamlAnalyzer _analyzer;
     private readonly XamlParser _parser;
-    private string? _workspacePath;
+    private readonly WorkspaceState _workspaceState;
 
-    public XamlTools(ILogger<XamlTools> logger)
+    public XamlTools(ILogger<XamlTools> logger, WorkspaceState workspaceState)
     {
         _logger = logger;
+        _workspaceState = workspaceState;
         _analyzer = new XamlAnalyzer(LoggerFactory.Create(b => b.AddConsole()).CreateLogger<XamlAnalyzer>());
         _parser = new XamlParser();
-    }
-
-    internal void SetWorkspace(string path)
-    {
-        _workspacePath = path;
     }
 
     [McpServerTool(Name = "xaml_validate")]
@@ -38,7 +35,7 @@ public class XamlTools
         CancellationToken cancellationToken)
     {
         content ??= await File.ReadAllTextAsync(filePath, cancellationToken);
-        projectPath ??= _workspacePath;
+        projectPath ??= _workspaceState.CurrentPath;
 
         var result = await _analyzer.AnalyzeAsync(filePath, content, projectPath, cancellationToken);
 

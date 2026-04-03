@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace CSharpLspMcp.Lsp;
@@ -183,8 +184,26 @@ public record TextDocumentClientCapabilities
     [JsonPropertyName("hover")]
     public HoverClientCapabilities? Hover { get; init; }
 
+    [JsonPropertyName("implementation")]
+    public DynamicRegistrationClientCapabilities? Implementation { get; init; }
+
+    [JsonPropertyName("callHierarchy")]
+    public DynamicRegistrationClientCapabilities? CallHierarchy { get; init; }
+
+    [JsonPropertyName("typeHierarchy")]
+    public DynamicRegistrationClientCapabilities? TypeHierarchy { get; init; }
+
+    [JsonPropertyName("diagnostic")]
+    public DiagnosticClientCapabilities? Diagnostic { get; init; }
+
     [JsonPropertyName("publishDiagnostics")]
     public PublishDiagnosticsClientCapabilities? PublishDiagnostics { get; init; }
+}
+
+public record DynamicRegistrationClientCapabilities
+{
+    [JsonPropertyName("dynamicRegistration")]
+    public bool? DynamicRegistration { get; init; }
 }
 
 public record TextDocumentSyncClientCapabilities
@@ -232,10 +251,37 @@ public record PublishDiagnosticsClientCapabilities
     public bool? RelatedInformation { get; init; }
 }
 
+public record DiagnosticClientCapabilities
+{
+    [JsonPropertyName("dynamicRegistration")]
+    public bool? DynamicRegistration { get; init; }
+
+    [JsonPropertyName("relatedDocumentSupport")]
+    public bool? RelatedDocumentSupport { get; init; }
+}
+
 public record WorkspaceClientCapabilities
 {
     [JsonPropertyName("workspaceFolders")]
     public bool? WorkspaceFolders { get; init; }
+
+    [JsonPropertyName("symbol")]
+    public WorkspaceSymbolClientCapabilities? Symbol { get; init; }
+
+    [JsonPropertyName("diagnostics")]
+    public DiagnosticWorkspaceClientCapabilities? Diagnostics { get; init; }
+}
+
+public record WorkspaceSymbolClientCapabilities
+{
+    [JsonPropertyName("dynamicRegistration")]
+    public bool? DynamicRegistration { get; init; }
+}
+
+public record DiagnosticWorkspaceClientCapabilities
+{
+    [JsonPropertyName("refreshSupport")]
+    public bool? RefreshSupport { get; init; }
 }
 
 public record WorkspaceFolder
@@ -261,6 +307,9 @@ public record ServerCapabilities
     [JsonPropertyName("textDocumentSync")]
     public object? TextDocumentSync { get; init; }
 
+    [JsonPropertyName("workspaceSymbolProvider")]
+    public object? WorkspaceSymbolProvider { get; init; }
+
     [JsonPropertyName("completionProvider")]
     public CompletionOptions? CompletionProvider { get; init; }
 
@@ -273,8 +322,20 @@ public record ServerCapabilities
     [JsonPropertyName("referencesProvider")]
     public bool? ReferencesProvider { get; init; }
 
+    [JsonPropertyName("implementationProvider")]
+    public object? ImplementationProvider { get; init; }
+
     [JsonPropertyName("documentSymbolProvider")]
     public bool? DocumentSymbolProvider { get; init; }
+
+    [JsonPropertyName("callHierarchyProvider")]
+    public object? CallHierarchyProvider { get; init; }
+
+    [JsonPropertyName("typeHierarchyProvider")]
+    public object? TypeHierarchyProvider { get; init; }
+
+    [JsonPropertyName("diagnosticProvider")]
+    public object? DiagnosticProvider { get; init; }
 
     [JsonPropertyName("codeActionProvider")]
     public bool? CodeActionProvider { get; init; }
@@ -474,6 +535,16 @@ public enum InsertTextFormat
 
 #endregion
 
+#region Workspace Symbols
+
+public record WorkspaceSymbolParams
+{
+    [JsonPropertyName("query")]
+    public required string Query { get; init; }
+}
+
+#endregion
+
 #region Hover
 
 public record HoverParams : TextDocumentPositionParams { }
@@ -498,9 +569,11 @@ public record MarkupContent
 
 #endregion
 
-#region Definition & References
+#region Definition, References & Implementations
 
 public record DefinitionParams : TextDocumentPositionParams { }
+
+public record ImplementationParams : TextDocumentPositionParams { }
 
 public record ReferenceParams : TextDocumentPositionParams
 {
@@ -512,6 +585,21 @@ public record ReferenceContext
 {
     [JsonPropertyName("includeDeclaration")]
     public bool IncludeDeclaration { get; init; }
+}
+
+public record LocationLink
+{
+    [JsonPropertyName("originSelectionRange")]
+    public Range? OriginSelectionRange { get; init; }
+
+    [JsonPropertyName("targetUri")]
+    public required string TargetUri { get; init; }
+
+    [JsonPropertyName("targetRange")]
+    public required Range TargetRange { get; init; }
+
+    [JsonPropertyName("targetSelectionRange")]
+    public required Range TargetSelectionRange { get; init; }
 }
 
 #endregion
@@ -568,6 +656,119 @@ public enum SymbolKind
     Number = 16, Boolean = 17, Array = 18, Object = 19, Key = 20,
     Null = 21, EnumMember = 22, Struct = 23, Event = 24, Operator = 25,
     TypeParameter = 26
+}
+
+#endregion
+
+#region Call Hierarchy
+
+public record CallHierarchyPrepareParams : TextDocumentPositionParams { }
+
+public record CallHierarchyItem
+{
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("kind")]
+    public SymbolKind Kind { get; init; }
+
+    [JsonPropertyName("tags")]
+    public SymbolTag[]? Tags { get; init; }
+
+    [JsonPropertyName("detail")]
+    public string? Detail { get; init; }
+
+    [JsonPropertyName("uri")]
+    public required string Uri { get; init; }
+
+    [JsonPropertyName("range")]
+    public required Range Range { get; init; }
+
+    [JsonPropertyName("selectionRange")]
+    public required Range SelectionRange { get; init; }
+
+    [JsonPropertyName("data")]
+    public JsonElement? Data { get; init; }
+}
+
+public enum SymbolTag
+{
+    Deprecated = 1
+}
+
+public record CallHierarchyIncomingCallsParams
+{
+    [JsonPropertyName("item")]
+    public required CallHierarchyItem Item { get; init; }
+}
+
+public record CallHierarchyIncomingCall
+{
+    [JsonPropertyName("from")]
+    public required CallHierarchyItem From { get; init; }
+
+    [JsonPropertyName("fromRanges")]
+    public required Range[] FromRanges { get; init; }
+}
+
+public record CallHierarchyOutgoingCallsParams
+{
+    [JsonPropertyName("item")]
+    public required CallHierarchyItem Item { get; init; }
+}
+
+public record CallHierarchyOutgoingCall
+{
+    [JsonPropertyName("to")]
+    public required CallHierarchyItem To { get; init; }
+
+    [JsonPropertyName("fromRanges")]
+    public required Range[] FromRanges { get; init; }
+}
+
+#endregion
+
+#region Type Hierarchy
+
+public record TypeHierarchyPrepareParams : TextDocumentPositionParams { }
+
+public record TypeHierarchyItem
+{
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("kind")]
+    public SymbolKind Kind { get; init; }
+
+    [JsonPropertyName("tags")]
+    public SymbolTag[]? Tags { get; init; }
+
+    [JsonPropertyName("detail")]
+    public string? Detail { get; init; }
+
+    [JsonPropertyName("uri")]
+    public required string Uri { get; init; }
+
+    [JsonPropertyName("range")]
+    public required Range Range { get; init; }
+
+    [JsonPropertyName("selectionRange")]
+    public required Range SelectionRange { get; init; }
+
+    [JsonPropertyName("data")]
+    public JsonElement? Data { get; init; }
+}
+
+public record TypeHierarchySupertypesParams
+{
+    [JsonPropertyName("item")]
+    public required TypeHierarchyItem Item { get; init; }
+}
+
+public record TypeHierarchySubtypesParams
+{
+    [JsonPropertyName("item")]
+    public required TypeHierarchyItem Item { get; init; }
 }
 
 #endregion
@@ -648,6 +849,49 @@ public record RenameParams : TextDocumentPositionParams
 {
     [JsonPropertyName("newName")]
     public required string NewName { get; init; }
+}
+
+#endregion
+
+#region Workspace Diagnostics
+
+public record WorkspaceDiagnosticParams
+{
+    [JsonPropertyName("previousResultIds")]
+    public required PreviousResultId[] PreviousResultIds { get; init; }
+}
+
+public record PreviousResultId
+{
+    [JsonPropertyName("uri")]
+    public required string Uri { get; init; }
+
+    [JsonPropertyName("value")]
+    public required string Value { get; init; }
+}
+
+public record WorkspaceDiagnosticReport
+{
+    [JsonPropertyName("items")]
+    public required WorkspaceDocumentDiagnosticReport[] Items { get; init; }
+}
+
+public record WorkspaceDocumentDiagnosticReport
+{
+    [JsonPropertyName("uri")]
+    public required string Uri { get; init; }
+
+    [JsonPropertyName("version")]
+    public int? Version { get; init; }
+
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    [JsonPropertyName("items")]
+    public Diagnostic[]? Diagnostics { get; init; }
+
+    [JsonPropertyName("resultId")]
+    public string? ResultId { get; init; }
 }
 
 #endregion

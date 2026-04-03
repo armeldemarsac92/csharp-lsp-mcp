@@ -1,5 +1,11 @@
 using CSharpLspMcp.Lsp;
+using CSharpLspMcp.Analysis.Lsp;
 using CSharpLspMcp.Tools;
+using CSharpLspMcp.Tools.Document;
+using CSharpLspMcp.Tools.Hierarchy;
+using CSharpLspMcp.Tools.Search;
+using CSharpLspMcp.Tools.Workspace;
+using CSharpLspMcp.Workspace;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -46,8 +52,14 @@ public class Program
             builder.Logging.SetMinimumLevel(logLevel);
 
             // Register solution filter and LSP client as singletons
+            builder.Services.AddSingleton<WorkspaceState>();
             builder.Services.AddSingleton<SolutionFilter>();
             builder.Services.AddSingleton<LspClient>();
+            builder.Services.AddSingleton<CSharpWorkspaceSession>();
+            builder.Services.AddSingleton<CSharpDocumentAnalysisService>();
+            builder.Services.AddSingleton<CSharpSearchAnalysisService>();
+            builder.Services.AddSingleton<CSharpHierarchyAnalysisService>();
+            builder.Services.AddSingleton<CSharpWorkspaceAnalysisService>();
 
             // Configure MCP server with official SDK
             builder.Services
@@ -60,7 +72,10 @@ public class Program
                     };
                 })
                 .WithStdioServerTransport()
-                .WithTools<CSharpTools>()
+                .WithTools<WorkspaceTools>()
+                .WithTools<DocumentTools>()
+                .WithTools<SearchTools>()
+                .WithTools<HierarchyTools>()
                 .WithTools<XamlTools>();
 
             var app = builder.Build();
@@ -123,8 +138,13 @@ AVAILABLE TOOLS:
     csharp_definition     - Go to definition
     csharp_references     - Find all references
     csharp_symbols        - Get document symbols
+    csharp_search_symbols - Search workspace symbols
+    csharp_find_implementations - Find implementations of a symbol
+    csharp_call_hierarchy - Get incoming and outgoing calls
+    csharp_type_hierarchy - Get supertypes and subtypes for a type
     csharp_code_actions   - Get available code actions
     csharp_rename         - Preview symbol rename
+    csharp_workspace_diagnostics - Get pull diagnostics across the workspace
 
   XAML Tools (built-in):
     xaml_validate         - Validate XAML for errors and issues

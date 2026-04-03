@@ -21,6 +21,8 @@ public class LspClient : IAsyncDisposable
     private bool _isInitialized;
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private TaskCompletionSource<bool>? _workspaceReadySource;
+    private ServerCapabilities? _serverCapabilities;
     private string? _filteredWorkspacePath;
     private string? _workspacePath;
 
@@ -96,7 +98,9 @@ public class LspClient : IAsyncDisposable
             _readLoopCts = null;
             _readLoopTask = null;
             _isInitialized = false;
+            _serverCapabilities = null;
             _filteredWorkspacePath = null;
+            _workspaceReadySource = null;
             _workspacePath = null;
             _requestId = 0;
             _pendingRequests.Clear();
@@ -185,6 +189,7 @@ public class LspClient : IAsyncDisposable
 
             _readLoopCts = new CancellationTokenSource();
             _readLoopTask = Task.Run(() => ReadLoopAsync(_readLoopCts.Token), _readLoopCts.Token);
+            _workspaceReadySource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // Initialize the LSP server with the (potentially filtered) workspace
             var initResult = await InitializeAsync(effectiveWorkspacePath, cancellationToken);
@@ -202,6 +207,10 @@ public class LspClient : IAsyncDisposable
             // Send initialized notification
             await SendNotificationAsync("initialized", new { }, cancellationToken);
 
+            if (string.IsNullOrWhiteSpace(launchSolutionPath))
+                _workspaceReadySource.TrySetResult(true);
+
+            _serverCapabilities = initResult.Capabilities;
             _isInitialized = true;
             return true;
         }
@@ -323,6 +332,23 @@ public class LspClient : IAsyncDisposable
                         DynamicRegistration = false,
                         ContentFormat = new[] { "markdown", "plaintext" }
                     },
+                    Implementation = new DynamicRegistrationClientCapabilities
+                    {
+                        DynamicRegistration = false
+                    },
+                    CallHierarchy = new DynamicRegistrationClientCapabilities
+                    {
+                        DynamicRegistration = false
+                    },
+                    TypeHierarchy = new DynamicRegistrationClientCapabilities
+                    {
+                        DynamicRegistration = false
+                    },
+                    Diagnostic = new DiagnosticClientCapabilities
+                    {
+                        DynamicRegistration = false,
+                        RelatedDocumentSupport = false
+                    },
                     PublishDiagnostics = new PublishDiagnosticsClientCapabilities
                     {
                         RelatedInformation = true
@@ -330,7 +356,15 @@ public class LspClient : IAsyncDisposable
                 },
                 Workspace = new WorkspaceClientCapabilities
                 {
-                    WorkspaceFolders = true
+                    WorkspaceFolders = true,
+                    Symbol = new WorkspaceSymbolClientCapabilities
+                    {
+                        DynamicRegistration = false
+                    },
+                    Diagnostics = new DiagnosticWorkspaceClientCapabilities
+                    {
+                        RefreshSupport = false
+                    }
                 }
             },
             WorkspaceFolders = workspacePath != null
@@ -456,15 +490,7 @@ public class LspClient : IAsyncDisposable
         };
 
         var result = await SendRequestAsync<JsonElement>("textDocument/definition", param, cancellationToken);
-        if (result.ValueKind == JsonValueKind.Undefined || result.ValueKind == JsonValueKind.Null)
-            return null;
-
-        // Response can be Location, Location[], or null
-        if (result.ValueKind == JsonValueKind.Array)
-            return result.Deserialize<Location[]>(JsonOptions);
-
-        var single = result.Deserialize<Location>(JsonOptions);
-        return single != null ? new[] { single } : null;
+        return ParseLocationArrayResult(result);
     }
 
     public async Task<Location[]?> GetReferencesAsync(string filePath, int line, int character, bool includeDeclaration = true, CancellationToken cancellationToken = default)
@@ -477,6 +503,139 @@ public class LspClient : IAsyncDisposable
         };
 
         return await SendRequestAsync<Location[]>("textDocument/references", param, cancellationToken);
+    }
+
+    public async Task<SymbolInformation[]?> SearchWorkspaceSymbolsAsync(string query, CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("workspace/symbol", _serverCapabilities?.WorkspaceSymbolProvider);
+
+        var param = new WorkspaceSymbolParams
+        {
+            Query = query
+        };
+
+        return await SendRequestAsync<SymbolInformation[]>("workspace/symbol", param, cancellationToken);
+    }
+
+    public async Task<Location[]?> GetImplementationsAsync(string filePath, int line, int character, CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("textDocument/implementation", _serverCapabilities?.ImplementationProvider);
+
+        var param = new ImplementationParams
+        {
+            TextDocument = new TextDocumentIdentifier { Uri = new Uri(filePath).ToString() },
+            Position = new Position { Line = line, Character = character }
+        };
+
+        var result = await SendRequestAsync<JsonElement>("textDocument/implementation", param, cancellationToken);
+        return ParseLocationArrayResult(result);
+    }
+
+    public async Task<CallHierarchyItem[]?> PrepareCallHierarchyAsync(string filePath, int line, int character, CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("textDocument/prepareCallHierarchy", _serverCapabilities?.CallHierarchyProvider);
+
+        var param = new CallHierarchyPrepareParams
+        {
+            TextDocument = new TextDocumentIdentifier { Uri = new Uri(filePath).ToString() },
+            Position = new Position { Line = line, Character = character }
+        };
+
+        return await SendRequestAsync<CallHierarchyItem[]>("textDocument/prepareCallHierarchy", param, cancellationToken);
+    }
+
+    public async Task<CallHierarchyIncomingCall[]?> GetIncomingCallsAsync(CallHierarchyItem item, CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("callHierarchy/incomingCalls", _serverCapabilities?.CallHierarchyProvider);
+
+        var param = new CallHierarchyIncomingCallsParams
+        {
+            Item = item
+        };
+
+        return await SendRequestAsync<CallHierarchyIncomingCall[]>("callHierarchy/incomingCalls", param, cancellationToken);
+    }
+
+    public async Task<CallHierarchyOutgoingCall[]?> GetOutgoingCallsAsync(CallHierarchyItem item, CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("callHierarchy/outgoingCalls", _serverCapabilities?.CallHierarchyProvider);
+
+        var param = new CallHierarchyOutgoingCallsParams
+        {
+            Item = item
+        };
+
+        return await SendRequestAsync<CallHierarchyOutgoingCall[]>("callHierarchy/outgoingCalls", param, cancellationToken);
+    }
+
+    public async Task<TypeHierarchyItem[]?> PrepareTypeHierarchyAsync(string filePath, int line, int character, CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("textDocument/prepareTypeHierarchy", _serverCapabilities?.TypeHierarchyProvider);
+
+        var param = new TypeHierarchyPrepareParams
+        {
+            TextDocument = new TextDocumentIdentifier { Uri = new Uri(filePath).ToString() },
+            Position = new Position { Line = line, Character = character }
+        };
+
+        return await SendRequestAsync<TypeHierarchyItem[]>("textDocument/prepareTypeHierarchy", param, cancellationToken);
+    }
+
+    public async Task<TypeHierarchyItem[]?> GetTypeHierarchySupertypesAsync(TypeHierarchyItem item, CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("typeHierarchy/supertypes", _serverCapabilities?.TypeHierarchyProvider);
+
+        var param = new TypeHierarchySupertypesParams
+        {
+            Item = item
+        };
+
+        return await SendRequestAsync<TypeHierarchyItem[]>("typeHierarchy/supertypes", param, cancellationToken);
+    }
+
+    public async Task<TypeHierarchyItem[]?> GetTypeHierarchySubtypesAsync(TypeHierarchyItem item, CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("typeHierarchy/subtypes", _serverCapabilities?.TypeHierarchyProvider);
+
+        var param = new TypeHierarchySubtypesParams
+        {
+            Item = item
+        };
+
+        return await SendRequestAsync<TypeHierarchyItem[]>("typeHierarchy/subtypes", param, cancellationToken);
+    }
+
+    public async Task<WorkspaceDiagnosticReport?> GetWorkspaceDiagnosticsAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureServerCapability("workspace/diagnostic", _serverCapabilities?.DiagnosticProvider);
+
+        var param = new WorkspaceDiagnosticParams
+        {
+            PreviousResultIds = Array.Empty<PreviousResultId>()
+        };
+
+        return await SendRequestAsync<WorkspaceDiagnosticReport>("workspace/diagnostic", param, cancellationToken);
+    }
+
+    public async Task WaitForWorkspaceReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        var readySource = _workspaceReadySource;
+        if (readySource == null)
+            return;
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            await readySource.Task.WaitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Timed out waiting {TimeoutSeconds}s for workspace readiness signal.",
+                timeout.TotalSeconds);
+        }
     }
 
     public async Task<object?> GetDocumentSymbolsAsync(string filePath, CancellationToken cancellationToken = default)
@@ -752,6 +911,20 @@ public class LspClient : IAsyncDisposable
             return;
         }
 
+        if (method == "window/logMessage" &&
+            root.TryGetProperty("params", out var logParams) &&
+            logParams.TryGetProperty("message", out var messageElement))
+        {
+            var message = messageElement.GetString();
+            if (!string.IsNullOrWhiteSpace(message) &&
+                message.Contains("Finished loading solution", StringComparison.OrdinalIgnoreCase))
+            {
+                _workspaceReadySource?.TrySetResult(true);
+            }
+
+            return;
+        }
+
         _logger.LogDebug("Ignoring server notification method={Method}", method);
     }
 
@@ -858,6 +1031,82 @@ public class LspClient : IAsyncDisposable
         return false;
     }
 
+    private static Location[]? ParseLocationArrayResult(JsonElement result)
+    {
+        if (result.ValueKind == JsonValueKind.Undefined || result.ValueKind == JsonValueKind.Null)
+            return null;
+
+        if (result.ValueKind == JsonValueKind.Array)
+        {
+            if (result.GetArrayLength() == 0)
+                return Array.Empty<Location>();
+
+            var locations = new List<Location>(result.GetArrayLength());
+            foreach (var item in result.EnumerateArray())
+            {
+                if (TryParseLocation(item, out var location))
+                    locations.Add(location);
+            }
+
+            return locations.ToArray();
+        }
+
+        return TryParseLocation(result, out var single) ? new[] { single } : null;
+    }
+
+    private static bool TryParseLocation(JsonElement element, out Location location)
+    {
+        if (element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty("targetUri", out _))
+        {
+            var link = element.Deserialize<LocationLink>(JsonOptions);
+            if (link != null)
+            {
+                location = new Location
+                {
+                    Uri = link.TargetUri,
+                    Range = link.TargetSelectionRange
+                };
+                return true;
+            }
+        }
+
+        var parsedLocation = element.Deserialize<Location>(JsonOptions);
+        if (parsedLocation != null)
+        {
+            location = parsedLocation;
+            return true;
+        }
+
+        location = default!;
+        return false;
+    }
+
+    private static bool IsProviderSupported(object? provider)
+    {
+        return provider switch
+        {
+            null => false,
+            bool value => value,
+            JsonElement jsonElement => jsonElement.ValueKind switch
+            {
+                JsonValueKind.False => false,
+                JsonValueKind.Null => false,
+                JsonValueKind.Undefined => false,
+                _ => true
+            },
+            _ => true
+        };
+    }
+
+    private static void EnsureServerCapability(string method, object? provider)
+    {
+        if (IsProviderSupported(provider))
+            return;
+
+        throw new NotSupportedException($"The current LSP server does not advertise support for {method}.");
+    }
+
     private static async Task<int?> ReadContentLengthAsync(Stream stream, CancellationToken cancellationToken)
     {
         var headerBytes = new List<byte>();
@@ -945,6 +1194,8 @@ public class LspClient : IAsyncDisposable
         _readLoopCts = null;
         _readLoopTask = null;
         _lspProcess = null;
+        _serverCapabilities = null;
+        _workspaceReadySource = null;
         _workspacePath = null;
     }
 
