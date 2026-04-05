@@ -122,4 +122,171 @@ public class CSharpChangeImpactServiceTests
             Directory.Delete(workspacePath, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task AnalyzeAsync_DoesNotIncludeUnrelatedSameProjectEntrypointsForSimpleSymbolQueryAsync()
+    {
+        var workspacePath = TestWorkspaceFactory.CreateChangeImpactWorkspace();
+        var graphStore = new CSharpGraphCacheStore();
+        try
+        {
+            var workspaceState = new WorkspaceState();
+            workspaceState.SetPath(workspacePath);
+
+            var lspClient = new LspClient(NullLogger<LspClient>.Instance, new SolutionFilter(NullLogger<SolutionFilter>.Instance));
+            var workspaceSession = new CSharpWorkspaceSession(NullLogger<CSharpWorkspaceSession>.Instance, lspClient, workspaceState);
+            var graphBuildService = new CSharpGraphBuildService(
+                new CSharpRoslynWorkspaceHost(NullLogger<CSharpRoslynWorkspaceHost>.Instance),
+                graphStore,
+                workspaceState);
+            await graphBuildService.BuildAsync(
+                path: workspacePath,
+                mode: "full",
+                includeTests: true,
+                includeGenerated: false,
+                CancellationToken.None);
+
+            var impactService = new CSharpChangeImpactService(
+                graphBuildService,
+                graphStore,
+                new CSharpRegistrationAnalysisService(workspaceState),
+                new CSharpEntrypointAnalysisService(workspaceState),
+                new CSharpTestMapAnalysisService(workspaceSession, workspaceState),
+                workspaceSession,
+                workspaceState);
+
+            var result = await impactService.AnalyzeAsync(
+                symbolQuery: "Sample.App.GraphNodeProjectionService",
+                filePath: null,
+                includeTests: false,
+                includeRegistrations: true,
+                includeEntrypoints: true,
+                rebuildIfMissing: false,
+                maxResults: 10,
+                CancellationToken.None);
+
+            Assert.Contains(result.Targets, item => item.DisplayName == "GraphNodeProjectionService");
+            Assert.DoesNotContain(result.Entrypoints, item => item.RelativePath.EndsWith("PublicCollectorEndpoints.cs", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(result.RecommendedFiles, item => item.RelativePath.EndsWith("PublicCollectorEndpoints.cs", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            var storagePath = graphStore.GetStoragePath(workspacePath);
+            if (File.Exists(storagePath))
+                File.Delete(storagePath);
+
+            Directory.Delete(workspacePath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ReturnsRegistrationsAndPreciseEntrypointsForInterfaceServiceAsync()
+    {
+        var workspacePath = TestWorkspaceFactory.CreateChangeImpactWorkspace();
+        var graphStore = new CSharpGraphCacheStore();
+        try
+        {
+            var workspaceState = new WorkspaceState();
+            workspaceState.SetPath(workspacePath);
+
+            var lspClient = new LspClient(NullLogger<LspClient>.Instance, new SolutionFilter(NullLogger<SolutionFilter>.Instance));
+            var workspaceSession = new CSharpWorkspaceSession(NullLogger<CSharpWorkspaceSession>.Instance, lspClient, workspaceState);
+            var graphBuildService = new CSharpGraphBuildService(
+                new CSharpRoslynWorkspaceHost(NullLogger<CSharpRoslynWorkspaceHost>.Instance),
+                graphStore,
+                workspaceState);
+            await graphBuildService.BuildAsync(
+                path: workspacePath,
+                mode: "full",
+                includeTests: true,
+                includeGenerated: false,
+                CancellationToken.None);
+
+            var impactService = new CSharpChangeImpactService(
+                graphBuildService,
+                graphStore,
+                new CSharpRegistrationAnalysisService(workspaceState),
+                new CSharpEntrypointAnalysisService(workspaceState),
+                new CSharpTestMapAnalysisService(workspaceSession, workspaceState),
+                workspaceSession,
+                workspaceState);
+
+            var result = await impactService.AnalyzeAsync(
+                symbolQuery: "Sample.App.ICollectorReadService",
+                filePath: null,
+                includeTests: false,
+                includeRegistrations: true,
+                includeEntrypoints: true,
+                rebuildIfMissing: false,
+                maxResults: 10,
+                CancellationToken.None);
+
+            Assert.Contains(result.Targets, item => item.DisplayName == "ICollectorReadService");
+            Assert.Contains(result.Registrations, item => item.ServiceType == "ICollectorReadService");
+            Assert.Contains(result.Entrypoints, item => item.RelativePath.EndsWith("PublicCollectorEndpoints.cs", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            var storagePath = graphStore.GetStoragePath(workspacePath);
+            if (File.Exists(storagePath))
+                File.Delete(storagePath);
+
+            Directory.Delete(workspacePath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ReturnsOwningTypeRegistrationForMemberQueryAsync()
+    {
+        var workspacePath = TestWorkspaceFactory.CreateChangeImpactWorkspace();
+        var graphStore = new CSharpGraphCacheStore();
+        try
+        {
+            var workspaceState = new WorkspaceState();
+            workspaceState.SetPath(workspacePath);
+
+            var lspClient = new LspClient(NullLogger<LspClient>.Instance, new SolutionFilter(NullLogger<SolutionFilter>.Instance));
+            var workspaceSession = new CSharpWorkspaceSession(NullLogger<CSharpWorkspaceSession>.Instance, lspClient, workspaceState);
+            var graphBuildService = new CSharpGraphBuildService(
+                new CSharpRoslynWorkspaceHost(NullLogger<CSharpRoslynWorkspaceHost>.Instance),
+                graphStore,
+                workspaceState);
+            await graphBuildService.BuildAsync(
+                path: workspacePath,
+                mode: "full",
+                includeTests: true,
+                includeGenerated: false,
+                CancellationToken.None);
+
+            var impactService = new CSharpChangeImpactService(
+                graphBuildService,
+                graphStore,
+                new CSharpRegistrationAnalysisService(workspaceState),
+                new CSharpEntrypointAnalysisService(workspaceState),
+                new CSharpTestMapAnalysisService(workspaceSession, workspaceState),
+                workspaceSession,
+                workspaceState);
+
+            var result = await impactService.AnalyzeAsync(
+                symbolQuery: "M:Sample.App.CollectorReadService.GetById",
+                filePath: null,
+                includeTests: false,
+                includeRegistrations: true,
+                includeEntrypoints: false,
+                rebuildIfMissing: false,
+                maxResults: 10,
+                CancellationToken.None);
+
+            Assert.Contains(result.Targets, item => item.DisplayName.Contains("CollectorReadService.GetById", StringComparison.Ordinal));
+            Assert.Contains(result.Registrations, item => item.ImplementationType == "CollectorReadService");
+        }
+        finally
+        {
+            var storagePath = graphStore.GetStoragePath(workspacePath);
+            if (File.Exists(storagePath))
+                File.Delete(storagePath);
+
+            Directory.Delete(workspacePath, recursive: true);
+        }
+    }
 }

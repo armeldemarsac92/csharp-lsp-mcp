@@ -125,7 +125,8 @@ internal sealed class WorkspaceGraphIndex
         => !string.Equals(kind, WorkspaceGraphNodeKinds.Solution, StringComparison.Ordinal) &&
            !string.Equals(kind, WorkspaceGraphNodeKinds.Project, StringComparison.Ordinal) &&
            !string.Equals(kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal) &&
-           !string.Equals(kind, WorkspaceGraphNodeKinds.DiRegistration, StringComparison.Ordinal);
+           !string.Equals(kind, WorkspaceGraphNodeKinds.DiRegistration, StringComparison.Ordinal) &&
+           !string.Equals(kind, WorkspaceGraphNodeKinds.Entrypoint, StringComparison.Ordinal);
 
     private static int GetMatchScore(
         WorkspaceGraphNode node,

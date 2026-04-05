@@ -94,11 +94,16 @@ public sealed class CSharpChangeImpactService
             .ToArray();
         var callerSeedIds = targetNodes.SelectMany(node => ExpandCallSeedNodeIds(index, node)).Distinct(StringComparer.Ordinal).ToArray();
         var relationSeedIds = targetNodes.SelectMany(node => ExpandRelationshipSeedNodeIds(index, node)).Distinct(StringComparer.Ordinal).ToArray();
+        var registrationSeedIds = targetNodes.SelectMany(node => ExpandRegistrationSeedNodeIds(index, node)).Distinct(StringComparer.Ordinal).ToArray();
         var candidateNames = BuildCandidateNames(targetNodes);
         var projectNames = targetNodes
             .Select(node => node.ProjectName)
             .Where(projectName => !string.IsNullOrWhiteSpace(projectName))
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var targetPaths = targetNodes
+            .Select(node => NormalizeResponseFilePath(node.FilePath, workspacePath))
+            .Where(path => !string.IsNullOrWhiteSpace(path))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var incomingCallItems = BuildIncomingCallItems(index, callerSeedIds, workspacePath)
@@ -117,10 +122,10 @@ public sealed class CSharpChangeImpactService
         var totalRelatedSymbols = BuildRelatedSymbolItems(index, relationSeedIds, workspacePath).Count;
 
         var registrationItems = includeRegistrations
-            ? await BuildRegistrationItemsAsync(index, relationSeedIds, candidateNames, projectNames, workspacePath, effectiveMaxResults, cancellationToken)
+            ? await BuildRegistrationItemsAsync(index, registrationSeedIds, symbolQuery, candidateNames, projectNames, workspacePath, effectiveMaxResults, cancellationToken)
             : new CollectionSlice<ImpactRegistrationItem>(Array.Empty<ImpactRegistrationItem>(), 0);
         var entrypointItems = includeEntrypoints
-            ? await BuildEntrypointItemsAsync(index, candidateNames, projectNames, workspacePath, effectiveMaxResults, cancellationToken)
+            ? await BuildEntrypointItemsAsync(index, candidateNames, projectNames, targetPaths, workspacePath, effectiveMaxResults, cancellationToken)
             : new CollectionSlice<ImpactEntrypointItem>(Array.Empty<ImpactEntrypointItem>(), 0);
         var testItems = includeTests
             ? await BuildTestItemsAsync(symbolQuery, filePath, targetNodes, workspacePath, effectiveMaxResults, cancellationToken)
@@ -235,7 +240,9 @@ public sealed class CSharpChangeImpactService
 
         if (!string.IsNullOrWhiteSpace(symbolQuery))
         {
-            var symbolMatches = index.FindSymbolCandidates(symbolQuery, 12);
+            var symbolMatches = FilterPreferredSymbolMatches(
+                index.FindSymbolCandidates(symbolQuery, 12),
+                symbolQuery);
             foreach (var match in symbolMatches)
                 resolved.TryAdd(match.Id, new TargetMatch("symbol", match));
 
@@ -264,6 +271,78 @@ public sealed class CSharpChangeImpactService
             .ThenBy(match => match.Node.ProjectName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(match => match.Node.FilePath ?? string.Empty, StringComparer.OrdinalIgnoreCase)
             .ThenBy(match => match.Node.Line ?? int.MaxValue);
+    }
+
+    private static IReadOnlyCollection<WorkspaceGraphNode> FilterPreferredSymbolMatches(
+        IReadOnlyCollection<WorkspaceGraphNode> symbolMatches,
+        string symbolQuery)
+    {
+        if (symbolMatches.Count <= 1)
+            return symbolMatches;
+
+        var matches = symbolMatches.ToArray();
+        var payloadQuery = ExtractDocumentationPayload(symbolQuery);
+        var simpleName = GetTrailingIdentifier(payloadQuery);
+
+        var identityMatches = matches
+            .Where(node => IsStrongIdentityMatch(node, symbolQuery, payloadQuery, simpleName))
+            .ToArray();
+        if (identityMatches.Length > 0)
+            return identityMatches;
+
+        var simpleMatches = matches
+            .Where(node => HasExactSimpleIdentity(node, simpleName))
+            .ToArray();
+        if (simpleMatches.Length > 0)
+            return simpleMatches;
+
+        return matches;
+    }
+
+    private static bool IsStrongIdentityMatch(
+        WorkspaceGraphNode node,
+        string rawQuery,
+        string payloadQuery,
+        string simpleName)
+    {
+        if (!string.IsNullOrWhiteSpace(node.DocumentationId) &&
+            string.Equals(node.DocumentationId, rawQuery, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var payload = ExtractDocumentationPayload(node.DocumentationId);
+        if (!string.IsNullOrWhiteSpace(payload))
+        {
+            if (string.Equals(payload, payloadQuery, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (payload.EndsWith($".{payloadQuery}", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return HasExactSimpleIdentity(node, simpleName);
+    }
+
+    private static bool HasExactSimpleIdentity(WorkspaceGraphNode node, string simpleName)
+    {
+        if (string.IsNullOrWhiteSpace(simpleName))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(node.MetadataName) &&
+            string.Equals(node.MetadataName, simpleName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var payload = ExtractDocumentationPayload(node.DocumentationId);
+        if (!string.IsNullOrWhiteSpace(payload) &&
+            string.Equals(GetTrailingIdentifier(payload), simpleName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static IEnumerable<string> ExpandCallSeedNodeIds(WorkspaceGraphIndex index, WorkspaceGraphNode node)
@@ -341,6 +420,41 @@ public sealed class CSharpChangeImpactService
         yield return node.Id;
     }
 
+    private static IEnumerable<string> ExpandRegistrationSeedNodeIds(WorkspaceGraphIndex index, WorkspaceGraphNode node)
+    {
+        if (string.Equals(node.Kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal))
+        {
+            foreach (var declaredSymbol in index.GetDeclaredSymbolsInDocument(node.Id))
+                yield return declaredSymbol.Id;
+
+            yield break;
+        }
+
+        yield return node.Id;
+
+        foreach (var container in index.GetIncomingSources(node.Id, WorkspaceGraphEdgeKinds.Contains)
+                     .Where(container =>
+                         string.Equals(container.Kind, WorkspaceGraphNodeKinds.Type, StringComparison.Ordinal)))
+        {
+            yield return container.Id;
+        }
+
+        foreach (var relatedTarget in index.GetOutgoingTargets(node.Id, WorkspaceGraphEdgeKinds.Implements)
+                     .Concat(index.GetOutgoingTargets(node.Id, WorkspaceGraphEdgeKinds.Inherits))
+                     .Concat(index.GetOutgoingTargets(node.Id, WorkspaceGraphEdgeKinds.Overrides))
+                     .DistinctBy(item => item.Id))
+        {
+            yield return relatedTarget.Id;
+
+            foreach (var container in index.GetIncomingSources(relatedTarget.Id, WorkspaceGraphEdgeKinds.Contains)
+                         .Where(container =>
+                             string.Equals(container.Kind, WorkspaceGraphNodeKinds.Type, StringComparison.Ordinal)))
+            {
+                yield return container.Id;
+            }
+        }
+    }
+
     private static HashSet<string> BuildCandidateNames(IEnumerable<WorkspaceGraphNode> nodes)
     {
         var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -402,6 +516,7 @@ public sealed class CSharpChangeImpactService
     private async Task<CollectionSlice<ImpactRegistrationItem>> BuildRegistrationItemsAsync(
         WorkspaceGraphIndex index,
         IEnumerable<string> seedNodeIds,
+        string? symbolQuery,
         IReadOnlySet<string> candidateNames,
         IReadOnlySet<string> projectNames,
         string workspacePath,
@@ -413,7 +528,7 @@ public sealed class CSharpChangeImpactService
             return graphSlice;
 
         var result = await _registrationAnalysisService.FindRegistrationsAsync(
-            query: null,
+            query: BuildRegistrationQuery(symbolQuery, candidateNames),
             includeConsumers: true,
             maxResults: Math.Max(100, maxResults * 20),
             cancellationToken);
@@ -471,11 +586,12 @@ public sealed class CSharpChangeImpactService
         WorkspaceGraphIndex index,
         IReadOnlySet<string> candidateNames,
         IReadOnlySet<string> projectNames,
+        IReadOnlySet<string> targetPaths,
         string workspacePath,
         int maxResults,
         CancellationToken cancellationToken)
     {
-        var graphSlice = BuildEntrypointItemsFromGraph(index, candidateNames, projectNames, workspacePath, maxResults);
+        var graphSlice = BuildEntrypointItemsFromGraph(index, candidateNames, projectNames, targetPaths, workspacePath, maxResults);
         if (graphSlice.TotalCount > 0)
             return graphSlice;
 
@@ -496,10 +612,10 @@ public sealed class CSharpChangeImpactService
                 project.ProgramPath ?? project.ProjectPath,
                 null,
                 $"{project.ProjectType} host")));
-        items.AddRange(FilterSourceLocations("aspnet_route", result.AspNetRoutes, candidateNames));
-        items.AddRange(FilterSourceLocations("hosted_service_registration", result.HostedServiceRegistrations, candidateNames));
-        items.AddRange(FilterSourceLocations("background_service", result.BackgroundServiceImplementations, candidateNames));
-        items.AddRange(FilterSourceLocations("serverless_handler", result.ServerlessHandlers, candidateNames));
+        items.AddRange(FilterSourceLocations("aspnet_route", result.AspNetRoutes, candidateNames, targetPaths));
+        items.AddRange(FilterSourceLocations("hosted_service_registration", result.HostedServiceRegistrations, candidateNames, targetPaths));
+        items.AddRange(FilterSourceLocations("background_service", result.BackgroundServiceImplementations, candidateNames, targetPaths));
+        items.AddRange(FilterSourceLocations("serverless_handler", result.ServerlessHandlers, candidateNames, targetPaths));
 
         var orderedItems = items
             .DistinctBy(item => $"{item.Category}|{item.RelativePath}|{item.LineNumber}|{item.Text}")
@@ -516,6 +632,7 @@ public sealed class CSharpChangeImpactService
         WorkspaceGraphIndex index,
         IReadOnlySet<string> candidateNames,
         IReadOnlySet<string> projectNames,
+        IReadOnlySet<string> targetPaths,
         string workspacePath,
         int maxResults)
     {
@@ -527,7 +644,9 @@ public sealed class CSharpChangeImpactService
                 Payload = ParseEntrypointPayload(node.DocumentationId)
             })
             .Where(item =>
-                projectNames.Contains(item.Node.ProjectName) ||
+                (string.Equals(item.Payload.Category, "host_project", StringComparison.Ordinal) &&
+                 projectNames.Contains(item.Node.ProjectName)) ||
+                targetPaths.Contains(NormalizeResponseFilePath(item.Node.FilePath, workspacePath)) ||
                 candidateNames.Any(candidate =>
                     ContainsCandidate(item.Node.DisplayName, candidate) ||
                     ContainsCandidate(item.Payload.Name, candidate) ||
@@ -596,16 +715,30 @@ public sealed class CSharpChangeImpactService
     private static IEnumerable<ImpactEntrypointItem> FilterSourceLocations(
         string category,
         IEnumerable<CSharpEntrypointAnalysisService.SourceLocationItem> sourceLocations,
-        IReadOnlySet<string> candidateNames)
+        IReadOnlySet<string> candidateNames,
+        IReadOnlySet<string> targetPaths)
     {
         return sourceLocations
-            .Where(location => candidateNames.Any(candidate => location.Text.Contains(candidate, StringComparison.OrdinalIgnoreCase)))
+            .Where(location =>
+                targetPaths.Contains(location.RelativePath) ||
+                candidateNames.Any(candidate => location.Text.Contains(candidate, StringComparison.OrdinalIgnoreCase)))
             .Select(location => new ImpactEntrypointItem(
                 category,
                 null,
                 location.RelativePath,
                 location.LineNumber,
                 location.Text));
+    }
+
+    private static string? BuildRegistrationQuery(string? symbolQuery, IReadOnlySet<string> candidateNames)
+    {
+        if (!string.IsNullOrWhiteSpace(symbolQuery))
+            return ExtractDocumentationPayload(symbolQuery);
+
+        return candidateNames
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
+            .OrderByDescending(candidate => candidate.Length)
+            .FirstOrDefault();
     }
 
     private static bool RegistrationMatches(

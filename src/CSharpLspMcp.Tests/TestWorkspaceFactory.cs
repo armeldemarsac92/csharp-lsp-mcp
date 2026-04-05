@@ -71,7 +71,27 @@ internal static class TestWorkspaceFactory
                 public static void AddApp(IServiceCollection services)
                 {
                     services.AddSingleton<IWeatherService, WeatherService>();
+                    services.AddSingleton<ICollectorReadService, CollectorReadService>();
                 }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(appDirectory, "DummyAspNet.cs"),
+            """
+            namespace Microsoft.AspNetCore.Builder;
+
+            public interface IEndpointRouteBuilder
+            {
+            }
+
+            public sealed class EndpointRouteBuilder : IEndpointRouteBuilder
+            {
+            }
+
+            public static class EndpointRouteBuilderExtensions
+            {
+                public static IEndpointRouteBuilder MapGet(this IEndpointRouteBuilder app, string pattern, Delegate handler)
+                    => app;
             }
             """);
         File.WriteAllText(
@@ -92,6 +112,52 @@ internal static class TestWorkspaceFactory
                 public static IServiceCollection AddSingleton<TService, TImplementation>(this IServiceCollection services)
                     where TImplementation : TService
                     => services;
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(appDirectory, "ICollectorReadService.cs"),
+            """
+            namespace Sample.App;
+
+            public interface ICollectorReadService
+            {
+                string GetById();
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(appDirectory, "CollectorReadService.cs"),
+            """
+            namespace Sample.App;
+
+            public sealed class CollectorReadService : ICollectorReadService
+            {
+                public string GetById() => "collector";
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(appDirectory, "GraphNodeProjectionService.cs"),
+            """
+            namespace Sample.App;
+
+            public sealed class GraphNodeProjectionService
+            {
+                public string Project(string source) => source.ToUpperInvariant();
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(appDirectory, "PublicCollectorEndpoints.cs"),
+            """
+            using Microsoft.AspNetCore.Builder;
+
+            namespace Sample.App;
+
+            public static class PublicCollectorEndpoints
+            {
+                public static IEndpointRouteBuilder MapPublicCollectorEndpoints(this IEndpointRouteBuilder app)
+                {
+                    app.MapGet("/public/collectors/{id}", (ICollectorReadService service) => service.GetById());
+                    return app;
+                }
             }
             """);
         File.WriteAllText(
