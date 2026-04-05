@@ -1,6 +1,8 @@
 using CSharpLspMcp.Lsp;
 using CSharpLspMcp.Analysis.Architecture;
 using CSharpLspMcp.Analysis.Lsp;
+using CSharpLspMcp.Analysis.Quality;
+using CSharpLspMcp.Analysis.Testing;
 using CSharpLspMcp.Tools;
 using CSharpLspMcp.Tools.Analysis;
 using CSharpLspMcp.Tools.Architecture;
@@ -65,7 +67,11 @@ public class Program
             builder.Services.AddSingleton<CSharpWorkspaceAnalysisService>();
             builder.Services.AddSingleton<CSharpProjectOverviewAnalysisService>();
             builder.Services.AddSingleton<CSharpEntrypointAnalysisService>();
+            builder.Services.AddSingleton<CSharpRegistrationAnalysisService>();
+            builder.Services.AddSingleton<CSharpSemanticSearchAnalysisService>();
             builder.Services.AddSingleton<CSharpSymbolAnalysisService>();
+            builder.Services.AddSingleton<CSharpTestMapAnalysisService>();
+            builder.Services.AddSingleton<CSharpDeadCodeAnalysisService>();
 
             // Configure MCP server with official SDK
             builder.Services
@@ -147,12 +153,16 @@ AVAILABLE TOOLS:
     csharp_references     - Find all references
     csharp_symbols        - Get document symbols
     csharp_search_symbols - Search workspace symbols
+    csharp_semantic_search - Run named semantic searches across the workspace
     csharp_find_implementations - Find implementations of a symbol
     csharp_call_hierarchy - Get incoming and outgoing calls
     csharp_type_hierarchy - Get supertypes and subtypes for a type
     csharp_project_overview - Summarize projects, dependencies, and entrypoints
     csharp_find_entrypoints - Discover hosts, routes, middleware, and hosted services
+    csharp_find_registrations - Trace DI registrations and likely consumers
     csharp_analyze_symbol - Build a one-shot symbol analysis report
+    csharp_test_map - Map production files or symbols to likely related tests
+    csharp_find_dead_code_candidates - Find best-effort dead code candidates
     csharp_code_actions   - Get available code actions
     csharp_rename         - Preview symbol rename
     csharp_workspace_diagnostics - Get pull diagnostics across the workspace

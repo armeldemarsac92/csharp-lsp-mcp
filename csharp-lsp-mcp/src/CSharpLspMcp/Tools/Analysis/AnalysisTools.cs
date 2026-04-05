@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using CSharpLspMcp.Analysis.Lsp;
+using CSharpLspMcp.Analysis.Quality;
+using CSharpLspMcp.Analysis.Testing;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
@@ -9,14 +11,20 @@ namespace CSharpLspMcp.Tools.Analysis;
 public sealed class AnalysisTools : CSharpToolBase
 {
     private readonly ILogger<AnalysisTools> _logger;
+    private readonly CSharpDeadCodeAnalysisService _deadCodeAnalysisService;
     private readonly CSharpSymbolAnalysisService _symbolAnalysisService;
+    private readonly CSharpTestMapAnalysisService _testMapAnalysisService;
 
     public AnalysisTools(
         ILogger<AnalysisTools> logger,
-        CSharpSymbolAnalysisService symbolAnalysisService)
+        CSharpSymbolAnalysisService symbolAnalysisService,
+        CSharpTestMapAnalysisService testMapAnalysisService,
+        CSharpDeadCodeAnalysisService deadCodeAnalysisService)
     {
         _logger = logger;
         _symbolAnalysisService = symbolAnalysisService;
+        _testMapAnalysisService = testMapAnalysisService;
+        _deadCodeAnalysisService = deadCodeAnalysisService;
     }
 
     [McpServerTool(Name = "csharp_analyze_symbol")]
@@ -38,6 +46,42 @@ public sealed class AnalysisTools : CSharpToolBase
                 line,
                 character,
                 content,
+                maxResults,
+                ct),
+            cancellationToken);
+
+    [McpServerTool(Name = "csharp_test_map")]
+    [Description("Map a production file or symbol name to likely related tests using file-name and content-reference heuristics.")]
+    public Task<string> GetTestMapAsync(
+        [Description("Absolute or workspace-relative path to the production C# file.")] string? filePath = null,
+        [Description("Optional symbol name or fully qualified type/member name to map to tests.")] string? symbolQuery = null,
+        [Description("Maximum number of related tests to return (default: 10)")] int maxResults = 10,
+        CancellationToken cancellationToken = default)
+        => ExecuteToolAsync(
+            _logger,
+            "csharp_test_map",
+            ct => _testMapAnalysisService.GetTestMapAsync(
+                filePath,
+                symbolQuery,
+                maxResults,
+                ct),
+            cancellationToken);
+
+    [McpServerTool(Name = "csharp_find_dead_code_candidates")]
+    [Description("Find best-effort dead code candidates such as unused private methods, unused private fields, and unreferenced internal types.")]
+    public Task<string> FindDeadCodeCandidatesAsync(
+        [Description("Include unused private methods and fields (default: true)")] bool includePrivateMembers = true,
+        [Description("Include unreferenced internal types (default: true)")] bool includeInternalTypes = true,
+        [Description("Include candidates from test projects and test paths (default: false)")] bool includeTests = false,
+        [Description("Maximum number of candidates to return (default: 20)")] int maxResults = 20,
+        CancellationToken cancellationToken = default)
+        => ExecuteToolAsync(
+            _logger,
+            "csharp_find_dead_code_candidates",
+            ct => _deadCodeAnalysisService.FindDeadCodeCandidatesAsync(
+                includePrivateMembers,
+                includeInternalTypes,
+                includeTests,
                 maxResults,
                 ct),
             cancellationToken);

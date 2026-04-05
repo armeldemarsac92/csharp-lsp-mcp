@@ -11,15 +11,18 @@ public sealed class ArchitectureTools : CSharpToolBase
     private readonly ILogger<ArchitectureTools> _logger;
     private readonly CSharpEntrypointAnalysisService _entrypointAnalysisService;
     private readonly CSharpProjectOverviewAnalysisService _projectOverviewAnalysisService;
+    private readonly CSharpRegistrationAnalysisService _registrationAnalysisService;
 
     public ArchitectureTools(
         ILogger<ArchitectureTools> logger,
         CSharpProjectOverviewAnalysisService projectOverviewAnalysisService,
-        CSharpEntrypointAnalysisService entrypointAnalysisService)
+        CSharpEntrypointAnalysisService entrypointAnalysisService,
+        CSharpRegistrationAnalysisService registrationAnalysisService)
     {
         _logger = logger;
         _projectOverviewAnalysisService = projectOverviewAnalysisService;
         _entrypointAnalysisService = entrypointAnalysisService;
+        _registrationAnalysisService = registrationAnalysisService;
     }
 
     [McpServerTool(Name = "csharp_project_overview")]
@@ -54,6 +57,23 @@ public sealed class ArchitectureTools : CSharpToolBase
                 includeAspNetRoutes,
                 includeHostedServices,
                 includeMiddlewarePipeline,
+                maxResults,
+                ct),
+            cancellationToken);
+
+    [McpServerTool(Name = "csharp_find_registrations")]
+    [Description("Trace DI registrations in the current workspace: service type, implementation, lifetime, registration site, and likely constructor consumers.")]
+    public Task<string> FindRegistrationsAsync(
+        [Description("Optional filter for service type, implementation type, or registration source text.")] string? query = null,
+        [Description("Include likely constructor consumers of each registered service (default: true)")] bool includeConsumers = true,
+        [Description("Maximum number of registrations and consumers to include per section (default: 20)")] int maxResults = 20,
+        CancellationToken cancellationToken = default)
+        => ExecuteToolAsync(
+            _logger,
+            "csharp_find_registrations",
+            ct => _registrationAnalysisService.FindRegistrationsAsync(
+                query,
+                includeConsumers,
                 maxResults,
                 ct),
             cancellationToken);

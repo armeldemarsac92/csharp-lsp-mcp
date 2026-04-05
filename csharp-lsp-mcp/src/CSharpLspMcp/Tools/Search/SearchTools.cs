@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using CSharpLspMcp.Analysis.Architecture;
 using CSharpLspMcp.Analysis.Lsp;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
@@ -9,14 +10,17 @@ namespace CSharpLspMcp.Tools.Search;
 public sealed class SearchTools : CSharpToolBase
 {
     private readonly ILogger<SearchTools> _logger;
+    private readonly CSharpSemanticSearchAnalysisService _semanticSearchAnalysisService;
     private readonly CSharpSearchAnalysisService _searchAnalysisService;
 
     public SearchTools(
         ILogger<SearchTools> logger,
-        CSharpSearchAnalysisService searchAnalysisService)
+        CSharpSearchAnalysisService searchAnalysisService,
+        CSharpSemanticSearchAnalysisService semanticSearchAnalysisService)
     {
         _logger = logger;
         _searchAnalysisService = searchAnalysisService;
+        _semanticSearchAnalysisService = semanticSearchAnalysisService;
     }
 
     [McpServerTool(Name = "csharp_search_symbols")]
@@ -29,5 +33,24 @@ public sealed class SearchTools : CSharpToolBase
             _logger,
             "csharp_search_symbols",
             ct => _searchAnalysisService.SearchSymbolsAsync(query, maxResults, ct),
+            cancellationToken);
+
+    [McpServerTool(Name = "csharp_semantic_search")]
+    [Description("Run named semantic searches over the current workspace such as aspnet_endpoints, hosted_services, di_registrations, config_bindings, or middleware_pipeline.")]
+    public Task<string> SemanticSearchAsync(
+        [Description("Named search mode: aspnet_endpoints, hosted_services, di_registrations, config_bindings, or middleware_pipeline.")] string query,
+        [Description("Optional project or path fragment filter.")] string? projectFilter = null,
+        [Description("Include matches from test projects and test paths (default: false).")] bool includeTests = false,
+        [Description("Maximum number of results to return (default: 20)")] int maxResults = 20,
+        CancellationToken cancellationToken = default)
+        => ExecuteToolAsync(
+            _logger,
+            "csharp_semantic_search",
+            ct => _semanticSearchAnalysisService.SearchAsync(
+                query,
+                projectFilter,
+                includeTests,
+                maxResults,
+                ct),
             cancellationToken);
 }
