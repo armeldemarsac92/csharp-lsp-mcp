@@ -38,5 +38,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - .NET 8.0
 - csharp-ls (external dependency)
 
-[Unreleased]: https://github.com/HYMMA/csharp-lsp-mcp/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/HYMMA/csharp-lsp-mcp/releases/tag/v1.0.0
+[Unreleased]: https://github.com/armeldemarsac92/csharp-lsp-mcp/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/armeldemarsac92/csharp-lsp-mcp/releases/tag/v1.0.0

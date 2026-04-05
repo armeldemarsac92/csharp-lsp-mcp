@@ -11,7 +11,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
 ### Reporting Bugs
 
 Before submitting a bug report:
-1. Check the [existing issues](https://github.com/HYMMA/csharp-lsp-mcp/issues) to avoid duplicates
+1. Check the [existing issues](https://github.com/armeldemarsac92/csharp-lsp-mcp/issues) to avoid duplicates
 2. Ensure you're using the latest version
 3. Verify that csharp-ls is properly installed (`dotnet tool list -g`)
 
@@ -47,14 +47,13 @@ git clone https://github.com/YOUR_USERNAME/csharp-lsp-mcp.git
 cd csharp-lsp-mcp
 
 # Install dependencies
-dotnet restore
+dotnet restore CSharpLspMcp.sln
 
 # Build
-cd csharp-lsp-mcp/src/CSharpLspMcp
-dotnet build
+dotnet build CSharpLspMcp.sln
 
 # Run tests
-dotnet test
+dotnet test CSharpLspMcp.sln
 ```
 
 #### Commit Messages
@@ -83,20 +82,24 @@ docs: update README with new configuration options
 - Add XML documentation for public APIs
 
 #### Project Structure
-```
-csharp-lsp-mcp/
+```text
+.
+├── CSharpLspMcp.sln
 ├── src/
-│   └── CSharpLspMcp/
-│       ├── Lsp/           # LSP client implementation
-│       ├── Tools/         # MCP tool implementations
-│       └── Program.cs     # Entry point
-├── tests/                  # Unit and integration tests
-└── docs/                   # Additional documentation
+│   ├── CSharpLspMcp/
+│   │   ├── Analysis/
+│   │   ├── Lsp/
+│   │   ├── Tools/
+│   │   └── Program.cs
+│   └── CSharpLspMcp.Tests/
+├── README.md
+├── CONTRIBUTING.md
+└── CHANGELOG.md
 ```
 
 #### Adding New Tools
 
-1. Create a new method in the appropriate tool class (`CSharpTools.cs` or `XamlTools.cs`)
+1. Create a new method in the appropriate feature-local tool class under `src/CSharpLspMcp/Tools/`
 2. Add the `[McpServerTool]` attribute with a descriptive name
 3. Add the `[Description]` attribute explaining what the tool does
 4. Document parameters with `[Description]` attributes
@@ -138,7 +141,7 @@ Releases are managed by maintainers. The process:
 
 ## Getting Help
 
-- Open an [issue](https://github.com/HYMMA/csharp-lsp-mcp/issues) for questions
+- Open an [issue](https://github.com/armeldemarsac92/csharp-lsp-mcp/issues) for questions
 - Check existing documentation and issues first
 
 ## License

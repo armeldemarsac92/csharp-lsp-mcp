@@ -106,10 +106,12 @@ Error responses keep the same top-level envelope:
 
 ## Repository Layout
 
-This repository contains the solution under the `csharp-lsp-mcp/` directory.
+This repository is flat:
 
-- repo root: docs, changelog, contribution guides, GitHub metadata
-- `csharp-lsp-mcp/`: .NET solution, source code, tests, and package assets
+- `CSharpLspMcp.sln`: solution entrypoint
+- `src/CSharpLspMcp/`: MCP server source
+- `src/CSharpLspMcp.Tests/`: unit and integration-style tests
+- repo root: docs, changelog, contribution guide, GitHub metadata
 
 ## Requirements
 
@@ -135,34 +137,27 @@ The XAML tools do not depend on `csharp-ls`, but the C# toolchain does.
 ```bash
 git clone https://github.com/armeldemarsac92/csharp-lsp-mcp.git
 cd csharp-lsp-mcp
-dotnet build csharp-lsp-mcp/CSharpLspMcp.sln -c Release
+dotnet build CSharpLspMcp.sln -c Release
 ```
 
 Build outputs from the repo root:
 
-- Windows: `csharp-lsp-mcp/src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.exe`
-- Linux/macOS: `csharp-lsp-mcp/src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp`
-- Cross-platform `dotnet` host: `csharp-lsp-mcp/src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll`
+- Windows: `src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.exe`
+- Linux/macOS: `src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp`
+- Cross-platform `dotnet` host: `src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll`
 
 ### Run directly with `dotnet`
 
 From the repo root, for a local development run:
 
 ```bash
-dotnet run --project csharp-lsp-mcp/src/CSharpLspMcp -- --verbose
+dotnet run --project src/CSharpLspMcp -- --verbose
 ```
 
 Or run the built server directly:
 
 ```bash
-dotnet csharp-lsp-mcp/src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll --verbose
-```
-
-If you prefer to work from inside the solution directory:
-
-```bash
-cd csharp-lsp-mcp
-dotnet run --project src/CSharpLspMcp
+dotnet src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll --verbose
 ```
 
 ### MCP client configuration
@@ -175,7 +170,7 @@ Example MCP configuration:
     "csharp": {
       "command": "dotnet",
       "args": [
-        "/absolute/path/to/csharp-lsp-mcp/csharp-lsp-mcp/src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll"
+        "/absolute/path/to/csharp-lsp-mcp/src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll"
       ]
     }
   }
@@ -192,7 +187,7 @@ For iterative local development, using `dotnet run` is also valid:
       "args": [
         "run",
         "--project",
-        "/absolute/path/to/csharp-lsp-mcp/csharp-lsp-mcp/src/CSharpLspMcp",
+        "/absolute/path/to/csharp-lsp-mcp/src/CSharpLspMcp",
         "--",
         "--verbose"
       ]
@@ -653,15 +648,6 @@ Generates a ViewModel interface from inferred binding properties.
 
 ## Development
 
-From the repo root:
-
-```bash
-dotnet build csharp-lsp-mcp/CSharpLspMcp.sln
-dotnet test csharp-lsp-mcp/CSharpLspMcp.sln
-```
-
-Or from inside `csharp-lsp-mcp/`:
-
 ```bash
 dotnet build
 dotnet test
@@ -670,7 +656,7 @@ dotnet test
 Verbose server logging from the repo root:
 
 ```bash
-dotnet run --project csharp-lsp-mcp/src/CSharpLspMcp -- --verbose
+dotnet run --project src/CSharpLspMcp -- --verbose
 ```
 
 ## Contributing

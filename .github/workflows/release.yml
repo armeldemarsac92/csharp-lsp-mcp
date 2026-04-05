@@ -25,16 +25,16 @@ jobs:
       run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
     - name: Restore dependencies
-      run: dotnet restore csharp-lsp-mcp/CSharpLspMcp.sln
+      run: dotnet restore CSharpLspMcp.sln
 
     - name: Build
-      run: dotnet build csharp-lsp-mcp/CSharpLspMcp.sln --configuration Release --no-restore -p:Version=${{ steps.get_version.outputs.VERSION }}
+      run: dotnet build CSharpLspMcp.sln --configuration Release --no-restore -p:Version=${{ steps.get_version.outputs.VERSION }}
 
     - name: Test
-      run: dotnet test csharp-lsp-mcp/CSharpLspMcp.sln --configuration Release --no-build --verbosity normal
+      run: dotnet test CSharpLspMcp.sln --configuration Release --no-build --verbosity normal
 
     - name: Pack
-      run: dotnet pack csharp-lsp-mcp/src/CSharpLspMcp/CSharpLspMcp.csproj --configuration Release --no-build --output ${{ env.NuGetDirectory }} -p:Version=${{ steps.get_version.outputs.VERSION }}
+      run: dotnet pack src/CSharpLspMcp/CSharpLspMcp.csproj --configuration Release --no-build --output ${{ env.NuGetDirectory }} -p:Version=${{ steps.get_version.outputs.VERSION }}
 
     - name: Upload NuGet package artifact
       uses: actions/upload-artifact@v4
@@ -83,7 +83,7 @@ jobs:
       run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
     - name: Pack as tool
-      run: dotnet pack csharp-lsp-mcp/src/CSharpLspMcp/CSharpLspMcp.csproj --configuration Release --output ./nuget-tool -p:Version=${{ steps.get_version.outputs.VERSION }} -p:PackAsTool=true
+      run: dotnet pack src/CSharpLspMcp/CSharpLspMcp.csproj --configuration Release --output ./nuget-tool -p:Version=${{ steps.get_version.outputs.VERSION }} -p:PackAsTool=true
 
     - name: Publish tool to NuGet
       run: |

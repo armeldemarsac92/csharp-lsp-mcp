@@ -22,10 +22,10 @@ jobs:
         dotnet-version: 8.0.x
 
     - name: Restore dependencies
-      run: dotnet restore csharp-lsp-mcp/CSharpLspMcp.sln
+      run: dotnet restore CSharpLspMcp.sln
 
     - name: Build
-      run: dotnet build csharp-lsp-mcp/CSharpLspMcp.sln --configuration Release --no-restore
+      run: dotnet build CSharpLspMcp.sln --configuration Release --no-restore
 
     - name: Test
-      run: dotnet test csharp-lsp-mcp/CSharpLspMcp.sln --configuration Release --no-build --verbosity normal
+      run: dotnet test CSharpLspMcp.sln --configuration Release --no-build --verbosity normal

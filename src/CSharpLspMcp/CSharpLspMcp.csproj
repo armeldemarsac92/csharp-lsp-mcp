@@ -17,8 +17,8 @@
     <Description>MCP (Model Context Protocol) server providing C# and XAML language intelligence for AI assistants like Claude. Exposes IntelliSense, diagnostics, and code analysis through the standardized MCP protocol.</Description>
     <PackageTags>mcp;csharp;dotnet;language-server;claude;ai;xaml;intellisense;roslyn;model-context-protocol</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/HYMMA/csharp-lsp-mcp</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/HYMMA/csharp-lsp-mcp.git</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/armeldemarsac92/csharp-lsp-mcp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/armeldemarsac92/csharp-lsp-mcp.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
 
@@ -43,7 +43,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>
