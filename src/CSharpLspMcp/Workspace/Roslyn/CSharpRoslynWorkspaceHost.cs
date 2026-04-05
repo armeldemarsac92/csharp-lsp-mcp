@@ -2,6 +2,7 @@ using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.Extensions.Logging;
+using System.Xml.Linq;
 
 namespace CSharpLspMcp.Workspace.Roslyn;
 
@@ -38,6 +39,10 @@ public sealed class CSharpRoslynWorkspaceHost
         {
             var project = await workspace.OpenProjectAsync(targetPath, cancellationToken: cancellationToken);
             solution = project.Solution;
+        }
+        else if (targetPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
+        {
+            solution = await OpenSlnxAsync(workspace, targetPath, cancellationToken);
         }
         else
         {
@@ -83,6 +88,45 @@ public sealed class CSharpRoslynWorkspaceHost
         return File.Exists(fullPath)
             ? Path.GetDirectoryName(fullPath) ?? fullPath
             : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static async Task<Solution> OpenSlnxAsync(
+        MSBuildWorkspace workspace,
+        string slnxPath,
+        CancellationToken cancellationToken)
+    {
+        var projectPaths = ParseSlnxProjectPaths(slnxPath);
+        if (projectPaths.Length == 0)
+            throw new InvalidOperationException($"No projects were found in {slnxPath}.");
+
+        Solution? solution = null;
+        foreach (var projectPath in projectPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var fullProjectPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(slnxPath)!, projectPath));
+            if (workspace.CurrentSolution.Projects.Any(project =>
+                    string.Equals(project.FilePath, fullProjectPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var project = await workspace.OpenProjectAsync(fullProjectPath, cancellationToken: cancellationToken);
+            solution = project.Solution;
+        }
+
+        return solution ?? workspace.CurrentSolution;
+    }
+
+    internal static string[] ParseSlnxProjectPaths(string slnxPath)
+    {
+        var document = XDocument.Load(slnxPath);
+        return document.Descendants()
+            .Where(element => string.Equals(element.Name.LocalName, "Project", StringComparison.Ordinal))
+            .Select(element => element.Attribute("Path")?.Value)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray()!;
     }
 
     private static IEnumerable<FileInfo> EnumerateWorkspaceTargets(DirectoryInfo directory)

@@ -149,6 +149,8 @@ public sealed class CSharpProjectOverviewAnalysisService
         var implicitUsings = ReadPropertyValues(document, "ImplicitUsings").LastOrDefault() ?? "default";
         var isTestProject = ReadPropertyValues(document, "IsTestProject")
             .Any(value => string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)) ||
+            projectName.Contains("Test", StringComparison.OrdinalIgnoreCase) ||
+            LooksLikeTestProjectPath(projectPath) ||
             packageReferences.Any(package => package.Contains("Microsoft.NET.Test.Sdk", StringComparison.OrdinalIgnoreCase)) ||
             packageReferences.Any(package =>
                 package.Contains("xunit", StringComparison.OrdinalIgnoreCase) ||
@@ -292,6 +294,12 @@ public sealed class CSharpProjectOverviewAnalysisService
 
     private static bool IsSolutionFile(string path)
         => SolutionFileExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+
+    private static bool LooksLikeTestProjectPath(string path)
+        => path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(segment =>
+                string.Equals(segment, "test", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(segment, "tests", StringComparison.OrdinalIgnoreCase));
 
     private sealed record ProjectOverview(
         string Name,

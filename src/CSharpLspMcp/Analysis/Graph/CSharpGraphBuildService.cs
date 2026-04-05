@@ -4,6 +4,7 @@ using CSharpLspMcp.Storage.Graph;
 using CSharpLspMcp.Workspace;
 using CSharpLspMcp.Workspace.Roslyn;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace CSharpLspMcp.Analysis.Graph;
 
@@ -230,6 +231,16 @@ public sealed class CSharpGraphBuildService
                 cancellationToken);
         }
 
+        await BuildCallEdgesAsync(
+            roslynContext.Solution,
+            orderedProjects,
+            includedProjectIds,
+            includeGenerated,
+            nodeMap,
+            edgeMap,
+            warnings,
+            cancellationToken);
+
         var graphProjects = orderedProjects
             .Where(project => includedProjectIds.Contains(project.Id))
             .Select(project => new WorkspaceGraphProjectSummary(
@@ -274,6 +285,7 @@ public sealed class CSharpGraphBuildService
             Projects: graphProjects,
             Nodes: graphNodes,
             Edges: graphEdges,
+            Features: [WorkspaceGraphEdgeKinds.Calls],
             Warnings: warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
@@ -283,6 +295,59 @@ public sealed class CSharpGraphBuildService
             .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
             .Select(group => new WorkspaceGraphCountItem(group.Key, group.Count()))
             .ToArray();
+
+    private static async Task BuildCallEdgesAsync(
+        Solution solution,
+        IEnumerable<Project> orderedProjects,
+        ISet<ProjectId> includedProjectIds,
+        bool includeGenerated,
+        IDictionary<string, WorkspaceGraphNode> nodeMap,
+        IDictionary<string, WorkspaceGraphEdge> edgeMap,
+        ICollection<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        foreach (var project in orderedProjects)
+        {
+            if (!includedProjectIds.Contains(project.Id))
+                continue;
+
+            foreach (var document in project.Documents
+                         .Where(document => document.FilePath != null)
+                         .Where(document => includeGenerated || !IsGeneratedPath(document.FilePath!))
+                         .OrderBy(document => document.FilePath, StringComparer.OrdinalIgnoreCase))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var root = await document.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                {
+                    warnings.Add($"Failed to build semantic model for document {document.FilePath}.");
+                    continue;
+                }
+
+                foreach (var sourceNode in root.DescendantNodes())
+                {
+                    var referencedSymbol = TryResolveReferencedSymbol(sourceNode, semanticModel, cancellationToken);
+                    if (referencedSymbol == null)
+                        continue;
+
+                    var sourceSymbol = ResolveGraphOwnerSymbol(semanticModel.GetEnclosingSymbol(sourceNode.SpanStart, cancellationToken));
+                    if (!TryResolveGraphNodeId(project, sourceSymbol, includeGenerated, nodeMap, out var sourceId))
+                        continue;
+
+                    var targetSymbol = ResolveReferencedGraphSymbol(referencedSymbol);
+                    if (!TryResolveGraphNodeId(project, targetSymbol, includeGenerated, nodeMap, out var targetId))
+                        continue;
+
+                    if (string.Equals(sourceId, targetId, StringComparison.Ordinal))
+                        continue;
+
+                    AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Calls, sourceId, targetId);
+                }
+            }
+        }
+    }
 
     private static void VisitNamespace(
         Project project,
@@ -406,6 +471,80 @@ public sealed class CSharpGraphBuildService
                 AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Overrides, memberNode.Id, CreateSymbolId(project, eventSymbol.OverriddenEvent));
                 break;
         }
+    }
+
+    private static ISymbol? TryResolveReferencedSymbol(
+        SyntaxNode node,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var symbolInfo = node switch
+        {
+            InvocationExpressionSyntax invocationExpression => semanticModel.GetSymbolInfo(invocationExpression, cancellationToken),
+            ObjectCreationExpressionSyntax objectCreationExpression => semanticModel.GetSymbolInfo(objectCreationExpression, cancellationToken),
+            ImplicitObjectCreationExpressionSyntax implicitObjectCreationExpression => semanticModel.GetSymbolInfo(implicitObjectCreationExpression, cancellationToken),
+            ConstructorInitializerSyntax constructorInitializer => semanticModel.GetSymbolInfo(constructorInitializer, cancellationToken),
+            _ => default
+        };
+
+        return symbolInfo.Symbol ?? symbolInfo.CandidateSymbols.FirstOrDefault();
+    }
+
+    private static ISymbol? ResolveReferencedGraphSymbol(ISymbol? symbol)
+        => symbol switch
+        {
+            IMethodSymbol methodSymbol when methodSymbol.ReducedFrom != null => methodSymbol.ReducedFrom,
+            IMethodSymbol methodSymbol => methodSymbol,
+            IPropertySymbol propertySymbol => propertySymbol,
+            IFieldSymbol fieldSymbol when !fieldSymbol.IsImplicitlyDeclared => fieldSymbol,
+            IEventSymbol eventSymbol => eventSymbol,
+            INamedTypeSymbol namedTypeSymbol => namedTypeSymbol,
+            _ => null
+        };
+
+    private static ISymbol? ResolveGraphOwnerSymbol(ISymbol? symbol)
+    {
+        var current = symbol;
+        while (current != null)
+        {
+            switch (current)
+            {
+                case IMethodSymbol methodSymbol when ShouldIncludeMethod(methodSymbol):
+                    return methodSymbol;
+                case IPropertySymbol propertySymbol:
+                    return propertySymbol;
+                case IFieldSymbol fieldSymbol when !fieldSymbol.IsImplicitlyDeclared:
+                    return fieldSymbol;
+                case IEventSymbol eventSymbol:
+                    return eventSymbol;
+                case INamedTypeSymbol namedTypeSymbol:
+                    return namedTypeSymbol;
+                default:
+                    current = current.ContainingSymbol;
+                    break;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryResolveGraphNodeId(
+        Project project,
+        ISymbol? symbol,
+        bool includeGenerated,
+        IDictionary<string, WorkspaceGraphNode> nodeMap,
+        out string nodeId)
+    {
+        nodeId = string.Empty;
+        if (symbol == null || !HasIncludedSourceLocation(symbol, includeGenerated))
+            return false;
+
+        var candidateId = CreateSymbolId(project, symbol);
+        if (!nodeMap.ContainsKey(candidateId))
+            return false;
+
+        nodeId = candidateId;
+        return true;
     }
 
     private static void AddDeclarationEdges(
@@ -565,7 +704,7 @@ public sealed class CSharpGraphBuildService
 
     private static string CreateSymbolId(Project project, ISymbol symbol)
     {
-        var assemblyName = project.AssemblyName ?? project.Name;
+        var assemblyName = symbol.ContainingAssembly?.Name ?? project.AssemblyName ?? project.Name;
         var documentationId = symbol.GetDocumentationCommentId();
         if (!string.IsNullOrWhiteSpace(documentationId))
             return $"symbol:{assemblyName}::{documentationId}";

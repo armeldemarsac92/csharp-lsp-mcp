@@ -27,6 +27,7 @@ public class CSharpGraphCacheStoreTests
             Projects: [new WorkspaceGraphProjectSummary("App", "App.csproj", "App", ["NET8_0"], false, 2, 3, 0)],
             Nodes: [new WorkspaceGraphNode("project:app", WorkspaceGraphNodeKinds.Project, "App", "App", null, null, null, null, "App")],
             Edges: [new WorkspaceGraphEdge(WorkspaceGraphEdgeKinds.Contains, "solution:/tmp", "project:app")],
+            Features: [WorkspaceGraphEdgeKinds.Calls],
             Warnings: []);
 
         try

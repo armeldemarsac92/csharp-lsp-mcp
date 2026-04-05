@@ -32,6 +32,45 @@ public class CSharpRoslynWorkspaceHostTests
         }
     }
 
+    [Fact]
+    public void ParseSlnxProjectPaths_ReturnsNestedProjectPaths()
+    {
+        var workspacePath = CreateTempDirectory();
+        try
+        {
+            var slnxPath = Path.Combine(workspacePath, "Sample.slnx");
+            File.WriteAllText(
+                slnxPath,
+                """
+                <Solution>
+                  <Folder Name="/Api/">
+                    <Project Path="src/Sample.Api/Sample.Api.csproj" />
+                  </Folder>
+                  <Folder Name="/Tests/">
+                    <Project Path="tests/Sample.Api.Tests/Sample.Api.Tests.csproj" />
+                  </Folder>
+                </Solution>
+                """);
+
+            var method = typeof(CSharpRoslynWorkspaceHost).GetMethod(
+                "ParseSlnxProjectPaths",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var projectPaths = (string[])method.Invoke(null, [slnxPath])!;
+
+            Assert.Collection(
+                projectPaths,
+                path => Assert.Equal("src/Sample.Api/Sample.Api.csproj", path),
+                path => Assert.Equal("tests/Sample.Api.Tests/Sample.Api.Tests.csproj", path));
+        }
+        finally
+        {
+            Directory.Delete(workspacePath, recursive: true);
+        }
+    }
+
     private static string CreateTempDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), $"roslyn-host-{Guid.NewGuid():N}");

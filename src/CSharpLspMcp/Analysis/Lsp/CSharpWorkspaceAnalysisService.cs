@@ -4,7 +4,7 @@ using CSharpLspMcp.Workspace;
 
 namespace CSharpLspMcp.Analysis.Lsp;
 
-public sealed class CSharpWorkspaceAnalysisService
+public sealed class CSharpWorkspaceAnalysisService : IWorkspaceDiagnosticsProvider
 {
     private static readonly string[] GeneratedFileSuffixes = [".g.cs", ".g.i.cs", ".designer.cs", ".generated.cs", ".AssemblyInfo.cs"];
     private readonly LspClient _lspClient;

@@ -21,6 +21,7 @@ public static class WorkspaceGraphEdgeKinds
     public const string Inherits = "inherits";
     public const string Implements = "implements";
     public const string Overrides = "overrides";
+    public const string Calls = "calls";
 }
 
 public sealed record WorkspaceGraphSnapshot(
@@ -38,6 +39,7 @@ public sealed record WorkspaceGraphSnapshot(
     WorkspaceGraphProjectSummary[] Projects,
     WorkspaceGraphNode[] Nodes,
     WorkspaceGraphEdge[] Edges,
+    string[] Features,
     string[] Warnings);
 
 public sealed record WorkspaceGraphCountItem(
