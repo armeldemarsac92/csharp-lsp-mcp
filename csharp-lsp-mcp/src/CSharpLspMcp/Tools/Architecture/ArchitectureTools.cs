@@ -9,14 +9,17 @@ namespace CSharpLspMcp.Tools.Architecture;
 public sealed class ArchitectureTools : CSharpToolBase
 {
     private readonly ILogger<ArchitectureTools> _logger;
+    private readonly CSharpEntrypointAnalysisService _entrypointAnalysisService;
     private readonly CSharpProjectOverviewAnalysisService _projectOverviewAnalysisService;
 
     public ArchitectureTools(
         ILogger<ArchitectureTools> logger,
-        CSharpProjectOverviewAnalysisService projectOverviewAnalysisService)
+        CSharpProjectOverviewAnalysisService projectOverviewAnalysisService,
+        CSharpEntrypointAnalysisService entrypointAnalysisService)
     {
         _logger = logger;
         _projectOverviewAnalysisService = projectOverviewAnalysisService;
+        _entrypointAnalysisService = entrypointAnalysisService;
     }
 
     [McpServerTool(Name = "csharp_project_overview")]
@@ -33,6 +36,25 @@ public sealed class ArchitectureTools : CSharpToolBase
                 maxProjects,
                 maxPackagesPerProject,
                 maxProjectReferencesPerProject,
+                ct),
+            cancellationToken);
+
+    [McpServerTool(Name = "csharp_find_entrypoints")]
+    [Description("Discover startup surfaces in the current workspace: host projects, Program.cs files, middleware pipeline calls, ASP.NET route registrations, and hosted/background services.")]
+    public Task<string> FindEntrypointsAsync(
+        [Description("Include direct ASP.NET route registrations such as MapGet/MapPost (default: true)")] bool includeAspNetRoutes = true,
+        [Description("Include AddHostedService registrations and BackgroundService implementations (default: true)")] bool includeHostedServices = true,
+        [Description("Include middleware pipeline calls from Program.cs such as UseAuthentication (default: true)")] bool includeMiddlewarePipeline = true,
+        [Description("Maximum number of items to include per section (default: 20)")] int maxResults = 20,
+        CancellationToken cancellationToken = default)
+        => ExecuteToolAsync(
+            _logger,
+            "csharp_find_entrypoints",
+            ct => _entrypointAnalysisService.FindEntrypointsAsync(
+                includeAspNetRoutes,
+                includeHostedServices,
+                includeMiddlewarePipeline,
+                maxResults,
                 ct),
             cancellationToken);
 }

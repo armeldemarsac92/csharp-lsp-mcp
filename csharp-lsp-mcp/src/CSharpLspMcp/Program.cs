@@ -64,6 +64,7 @@ public class Program
             builder.Services.AddSingleton<CSharpHierarchyAnalysisService>();
             builder.Services.AddSingleton<CSharpWorkspaceAnalysisService>();
             builder.Services.AddSingleton<CSharpProjectOverviewAnalysisService>();
+            builder.Services.AddSingleton<CSharpEntrypointAnalysisService>();
             builder.Services.AddSingleton<CSharpSymbolAnalysisService>();
 
             // Configure MCP server with official SDK
@@ -150,6 +151,7 @@ AVAILABLE TOOLS:
     csharp_call_hierarchy - Get incoming and outgoing calls
     csharp_type_hierarchy - Get supertypes and subtypes for a type
     csharp_project_overview - Summarize projects, dependencies, and entrypoints
+    csharp_find_entrypoints - Discover hosts, routes, middleware, and hosted services
     csharp_analyze_symbol - Build a one-shot symbol analysis report
     csharp_code_actions   - Get available code actions
     csharp_rename         - Preview symbol rename
