@@ -7,6 +7,7 @@ namespace CSharpLspMcp.Analysis.Architecture;
 public sealed class CSharpProjectOverviewAnalysisService
 {
     private static readonly string[] IgnoredPathSegments = [".git", ".idea", ".vs", "bin", "obj", "node_modules"];
+    private static readonly string[] SolutionFileExtensions = [".sln", ".slnx"];
     private readonly WorkspaceState _workspaceState;
 
     public CSharpProjectOverviewAnalysisService(WorkspaceState workspaceState)
@@ -27,8 +28,8 @@ public sealed class CSharpProjectOverviewAnalysisService
         cancellationToken.ThrowIfCancellationRequested();
 
         var solutionFiles = Directory
-            .EnumerateFiles(workspacePath, "*.sln*", SearchOption.TopDirectoryOnly)
-            .Where(path => !Path.GetFileName(path).EndsWith(".slnf", StringComparison.OrdinalIgnoreCase))
+            .EnumerateFiles(workspacePath, "*", SearchOption.TopDirectoryOnly)
+            .Where(IsSolutionFile)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -213,10 +214,29 @@ public sealed class CSharpProjectOverviewAnalysisService
             .Take(3);
 
         entrypoints.AddRange(workerFiles);
+        entrypoints.AddRange(FindLambdaHandlerFiles(projectDirectory, workspacePath));
 
         return entrypoints
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static IEnumerable<string> FindLambdaHandlerFiles(string projectDirectory, string workspacePath)
+    {
+        return Directory
+            .EnumerateFiles(projectDirectory, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !ContainsIgnoredPathSegment(path))
+            .Where(IsLambdaHandlerFile)
+            .Select(path => Path.GetRelativePath(workspacePath, path))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .Take(3);
+    }
+
+    private static bool IsLambdaHandlerFile(string filePath)
+    {
+        var content = File.ReadAllText(filePath);
+        return content.Contains("ILambdaContext", StringComparison.Ordinal) &&
+               content.Contains("Handler(", StringComparison.Ordinal);
     }
 
     private static bool ContainsIgnoredPathSegment(string path)
@@ -250,6 +270,12 @@ public sealed class CSharpProjectOverviewAnalysisService
             return "web";
         }
 
+        if (projectName.Contains("Lambda", StringComparison.OrdinalIgnoreCase) ||
+            packageReferences.Any(package => package.Contains("Amazon.Lambda", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "lambda";
+        }
+
         if (string.Equals(outputType, "Exe", StringComparison.OrdinalIgnoreCase))
         {
             if (projectName.Contains("Worker", StringComparison.OrdinalIgnoreCase) ||
@@ -263,6 +289,9 @@ public sealed class CSharpProjectOverviewAnalysisService
 
         return "classlib";
     }
+
+    private static bool IsSolutionFile(string path)
+        => SolutionFileExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
     private sealed record ProjectOverview(
         string Name,

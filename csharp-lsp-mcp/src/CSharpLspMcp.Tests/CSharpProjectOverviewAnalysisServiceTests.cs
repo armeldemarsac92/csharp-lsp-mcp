@@ -15,6 +15,7 @@ public sealed class CSharpProjectOverviewAnalysisServiceTests
         try
         {
             await File.WriteAllTextAsync(Path.Combine(workspacePath, "Sample.slnx"), "<Solution />");
+            await File.WriteAllTextAsync(Path.Combine(workspacePath, "Sample.sln.DotSettings.user"), "ignored");
 
             var appProjectDirectory = Path.Combine(workspacePath, "src", "Sample.App");
             Directory.CreateDirectory(appProjectDirectory);
@@ -74,6 +75,7 @@ public sealed class CSharpProjectOverviewAnalysisServiceTests
 
             Assert.Equal(workspacePath, overview.SolutionRoot);
             Assert.Contains("Sample.slnx", overview.SolutionFiles);
+            Assert.DoesNotContain("Sample.sln.DotSettings.user", overview.SolutionFiles);
             Assert.Equal(3, overview.TotalProjects);
             Assert.Contains(overview.Projects, project => project.Name == "Sample.App" && project.ProjectType == "web");
             Assert.Contains(overview.Projects, project => project.Name == "Sample.Core" && project.ProjectType == "classlib");

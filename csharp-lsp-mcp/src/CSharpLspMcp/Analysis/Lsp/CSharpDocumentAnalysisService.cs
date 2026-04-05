@@ -208,6 +208,7 @@ public sealed class CSharpDocumentAnalysisService
         if (symbols is DocumentSymbol[] documentSymbols)
         {
             var items = documentSymbols.Select(MapDocumentSymbol).ToArray();
+            items = CSharpSourceHeuristics.MergeTopLevelProgramSymbols(absolutePath, content, items);
             return new SymbolsResponse(
                 Summary: $"Found {CountDocumentSymbols(items)} symbol(s).",
                 FilePath: FormatPath(absolutePath),

@@ -87,6 +87,32 @@ public sealed class CSharpEntrypointAnalysisServiceTests
                 </Project>
                 """);
 
+            var lambdaProjectDirectory = Path.Combine(workspacePath, "src", "Sample.Lambdas");
+            Directory.CreateDirectory(lambdaProjectDirectory);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(lambdaProjectDirectory, "Sample.Lambdas.csproj"),
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(lambdaProjectDirectory, "QueuePump.cs"),
+                """
+                public sealed class QueuePump
+                {
+                    public async Task QueuePumpHandler(ScalingRequest request, ILambdaContext context)
+                    {
+                    }
+
+                    private Task Helper(ILambdaContext context) => Task.CompletedTask;
+                }
+                """);
+
             var workspaceState = new WorkspaceState();
             workspaceState.SetPath(workspacePath);
             var service = new CSharpEntrypointAnalysisService(workspaceState);
@@ -94,7 +120,7 @@ public sealed class CSharpEntrypointAnalysisServiceTests
             var summary = await service.FindEntrypointsAsync(true, true, true, 20, CancellationToken.None);
 
             Assert.Equal(workspacePath, summary.SolutionRoot);
-            Assert.Equal(2, summary.HostProjects.Length);
+            Assert.Equal(3, summary.HostProjects.Length);
             Assert.Contains(summary.HostProjects, project => project.Name == "Sample.Api" && project.ProjectType == "web");
             Assert.Contains(summary.HostProjects, project => project.ProgramPath == "src/Sample.Api/Program.cs");
             Assert.Contains(summary.HostProjects, project => project.MiddlewareCalls.Contains("UseAuthentication"));
@@ -103,6 +129,9 @@ public sealed class CSharpEntrypointAnalysisServiceTests
             Assert.Contains(summary.HostedServiceRegistrations, route => route.Text.Contains("AddHostedService<RuntimeWorker>()", StringComparison.Ordinal));
             Assert.Contains(summary.BackgroundServiceImplementations, route => route.Text.Contains("RuntimeWorker : BackgroundService", StringComparison.Ordinal));
             Assert.Contains(summary.HostProjects, project => project.Name == "Sample.Worker" && project.ProjectType == "worker");
+            Assert.Contains(summary.HostProjects, project => project.Name == "Sample.Lambdas" && project.ProjectType == "lambda");
+            Assert.Contains(summary.ServerlessHandlers, handler => handler.Text.Contains("QueuePumpHandler", StringComparison.Ordinal));
+            Assert.DoesNotContain(summary.ServerlessHandlers, handler => handler.Text.Contains("Helper(", StringComparison.Ordinal));
         }
         finally
         {

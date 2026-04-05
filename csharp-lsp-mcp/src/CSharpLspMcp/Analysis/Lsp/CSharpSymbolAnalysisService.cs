@@ -61,7 +61,8 @@ public sealed class CSharpSymbolAnalysisService
                     Supertypes: Array.Empty<HierarchyNodeItem>(),
                     TruncatedSupertypes: 0,
                     Subtypes: Array.Empty<HierarchyNodeItem>(),
-                    TruncatedSubtypes: 0)
+                    TruncatedSubtypes: 0,
+                    UsedHeuristicOutgoingFallback: false)
                 : new SymbolAnalysisResponse(
                     Summary: $"No workspace symbol matched '{symbolQuery}'.",
                     Symbol: null,
@@ -81,7 +82,8 @@ public sealed class CSharpSymbolAnalysisService
                     Supertypes: Array.Empty<HierarchyNodeItem>(),
                     TruncatedSupertypes: 0,
                     Subtypes: Array.Empty<HierarchyNodeItem>(),
-                    TruncatedSubtypes: 0);
+                    TruncatedSubtypes: 0,
+                    UsedHeuristicOutgoingFallback: false);
         }
 
         return await BuildAnalysisAsync(resolvedSymbol, effectiveMaxResults, cancellationToken);
@@ -120,7 +122,7 @@ public sealed class CSharpSymbolAnalysisService
             .ToArray();
 
         return new SymbolAnalysisResponse(
-            Summary: $"Analyzed {resolvedSymbol.Name}{FormatKindSuffix(resolvedSymbol.Kind)} with {references.Length} reference(s), {implementations.Locations.Count + implementations.TypeItems.Count} implementation(s), and {relatedTests.Length} related test reference(s).",
+            Summary: BuildAnalysisSummary(resolvedSymbol, references.Length, implementations.Locations.Count + implementations.TypeItems.Count, relatedTests.Length, callHierarchy.UsedHeuristicOutgoingFallback),
             Symbol: new SymbolIdentity(
                 resolvedSymbol.Name,
                 resolvedSymbol.Kind?.ToString(),
@@ -147,14 +149,19 @@ public sealed class CSharpSymbolAnalysisService
                 .Select(call => MapCallSite(call.From, call.FromRanges.FirstOrDefault()?.Start))
                 .ToArray(),
             TruncatedIncomingCalls: Math.Max(0, callHierarchy.Incoming.Count - maxResults),
-            OutgoingCalls: callHierarchy.Outgoing.Take(maxResults)
-                .Select(call => MapCallSite(call.To, call.FromRanges.FirstOrDefault()?.Start))
-                .ToArray(),
-            TruncatedOutgoingCalls: Math.Max(0, callHierarchy.Outgoing.Count - maxResults),
+            OutgoingCalls: callHierarchy.HeuristicOutgoing.Count > 0
+                ? callHierarchy.HeuristicOutgoing.Take(maxResults).ToArray()
+                : callHierarchy.Outgoing.Take(maxResults)
+                    .Select(call => MapCallSite(call.To, call.FromRanges.FirstOrDefault()?.Start))
+                    .ToArray(),
+            TruncatedOutgoingCalls: callHierarchy.HeuristicOutgoing.Count > 0
+                ? Math.Max(0, callHierarchy.HeuristicOutgoing.Count - maxResults)
+                : Math.Max(0, callHierarchy.Outgoing.Count - maxResults),
             Supertypes: typeHierarchy.Supertypes.Take(maxResults).Select(MapTypeHierarchyItem).ToArray(),
             TruncatedSupertypes: Math.Max(0, typeHierarchy.Supertypes.Count - maxResults),
             Subtypes: typeHierarchy.Subtypes.Take(maxResults).Select(MapTypeHierarchyItem).ToArray(),
-            TruncatedSubtypes: Math.Max(0, typeHierarchy.Subtypes.Count - maxResults));
+            TruncatedSubtypes: Math.Max(0, typeHierarchy.Subtypes.Count - maxResults),
+            UsedHeuristicOutgoingFallback: callHierarchy.UsedHeuristicOutgoingFallback);
     }
 
     private async Task<ResolvedSymbol?> ResolveSymbolFromPositionAsync(
@@ -178,7 +185,35 @@ public sealed class CSharpSymbolAnalysisService
                 absolutePath,
                 documentSymbol.SelectionRange.Start.Line,
                 documentSymbol.SelectionRange.Start.Character,
+                documentSymbol.Range,
                 null);
+        }
+
+        var definitions = await _lspClient.GetDefinitionAsync(absolutePath, line, character, cancellationToken);
+        var definition = definitions?.FirstOrDefault();
+        if (definition != null)
+        {
+            var definitionPath = new Uri(definition.Uri).LocalPath;
+            await _workspaceSession.EnsureDocumentOpenAsync(definitionPath, null, cancellationToken);
+
+            var definitionSymbol = await TryResolveDocumentSymbolAsync(
+                definitionPath,
+                definition.Range.Start.Line,
+                definition.Range.Start.Character,
+                cancellationToken);
+            if (definitionSymbol != null)
+            {
+                return new ResolvedSymbol(
+                    definitionSymbol.Name,
+                    definitionSymbol.Kind,
+                    definitionSymbol.Detail,
+                    definitionSymbol.ContainerName,
+                    definitionPath,
+                    definitionSymbol.SelectionRange.Start.Line,
+                    definitionSymbol.SelectionRange.Start.Character,
+                    definitionSymbol.Range,
+                    "No document symbol exactly matched the requested position; resolved the target symbol from definition.");
+            }
         }
 
         return new ResolvedSymbol(
@@ -189,6 +224,7 @@ public sealed class CSharpSymbolAnalysisService
             absolutePath,
             line,
             character,
+            null,
             "No document symbol exactly matched the requested position; using the raw location.");
     }
 
@@ -221,6 +257,7 @@ public sealed class CSharpSymbolAnalysisService
                 absolutePath,
                 documentSymbol.SelectionRange.Start.Line,
                 documentSymbol.SelectionRange.Start.Character,
+                documentSymbol.Range,
                 resolutionNote);
         }
 
@@ -232,6 +269,7 @@ public sealed class CSharpSymbolAnalysisService
             absolutePath,
             selectedSymbol.Location.Range.Start.Line,
             selectedSymbol.Location.Range.Start.Character,
+            selectedSymbol.Location.Range,
             resolutionNote);
     }
 
@@ -308,7 +346,37 @@ public sealed class CSharpSymbolAnalysisService
                            Array.Empty<CallHierarchyIncomingCall>();
             var outgoing = await _lspClient.GetOutgoingCallsAsync(item, cancellationToken) ??
                            Array.Empty<CallHierarchyOutgoingCall>();
-            return new CallHierarchySummary(item, incoming, outgoing);
+            var fallbackRange = resolvedSymbol.ContainingRange;
+            if (fallbackRange == null)
+            {
+                var documentSymbols = await _lspClient.GetDocumentSymbolsAsync(resolvedSymbol.FilePath, cancellationToken);
+                fallbackRange = CSharpSourceHeuristics.FindContainingSymbolRange(
+                    documentSymbols,
+                    resolvedSymbol.Line,
+                    resolvedSymbol.Character);
+            }
+
+            var heuristicOutgoing = outgoing.Length == 0
+                ? await CSharpSourceHeuristics.ResolveOutgoingCallsAsync(
+                    _lspClient,
+                    resolvedSymbol.FilePath,
+                    null,
+                    fallbackRange ?? item.Range,
+                    CSharpSourceHeuristics.GetInvocationAnchorName(resolvedSymbol.Name),
+                    cancellationToken)
+                : Array.Empty<CSharpSourceHeuristics.HeuristicOutgoingCall>();
+            return new CallHierarchySummary(
+                item,
+                incoming,
+                outgoing,
+                heuristicOutgoing.Select(call => new CallSiteItem(
+                    call.Name,
+                    call.Kind,
+                    call.Detail,
+                    FormatPath(call.FilePath),
+                    call.Line,
+                    call.Character))
+                    .ToArray());
         }
         catch (InvalidOperationException)
         {
@@ -407,6 +475,19 @@ public sealed class CSharpSymbolAnalysisService
 
     private static string FormatKindSuffix(SymbolKind? kind)
         => kind == null ? string.Empty : $" ({kind})";
+
+    private static string BuildAnalysisSummary(
+        ResolvedSymbol resolvedSymbol,
+        int referenceCount,
+        int implementationCount,
+        int relatedTestCount,
+        bool usedHeuristicOutgoingFallback)
+    {
+        var summary = $"Analyzed {resolvedSymbol.Name}{FormatKindSuffix(resolvedSymbol.Kind)} with {referenceCount} reference(s), {implementationCount} implementation(s), and {relatedTestCount} related test reference(s).";
+        return usedHeuristicOutgoingFallback
+            ? $"{summary} Outgoing calls were resolved with a definition-based heuristic fallback."
+            : summary;
+    }
 
     private static string? BuildWorkspaceMatchNote(
         IReadOnlyCollection<SymbolInformation> matches,
@@ -653,6 +734,7 @@ public sealed class CSharpSymbolAnalysisService
         string FilePath,
         int Line,
         int Character,
+        CSharpLspMcp.Lsp.Range? ContainingRange,
         string? ResolutionNote);
 
     private sealed record DocumentSymbolSelection(
@@ -670,10 +752,13 @@ public sealed class CSharpSymbolAnalysisService
     private sealed record CallHierarchySummary(
         CallHierarchyItem? Root,
         IReadOnlyCollection<CallHierarchyIncomingCall> Incoming,
-        IReadOnlyCollection<CallHierarchyOutgoingCall> Outgoing)
+        IReadOnlyCollection<CallHierarchyOutgoingCall> Outgoing,
+        IReadOnlyCollection<CallSiteItem> HeuristicOutgoing)
     {
         public static CallHierarchySummary Empty { get; } =
-            new(null, Array.Empty<CallHierarchyIncomingCall>(), Array.Empty<CallHierarchyOutgoingCall>());
+            new(null, Array.Empty<CallHierarchyIncomingCall>(), Array.Empty<CallHierarchyOutgoingCall>(), Array.Empty<CallSiteItem>());
+
+        public bool UsedHeuristicOutgoingFallback => HeuristicOutgoing.Count > 0;
     }
 
     private sealed record TypeHierarchySummary(
@@ -704,7 +789,8 @@ public sealed class CSharpSymbolAnalysisService
         HierarchyNodeItem[] Supertypes,
         int TruncatedSupertypes,
         HierarchyNodeItem[] Subtypes,
-        int TruncatedSubtypes) : IStructuredToolResult;
+        int TruncatedSubtypes,
+        bool UsedHeuristicOutgoingFallback) : IStructuredToolResult;
 
     public sealed record SymbolIdentity(
         string Name,

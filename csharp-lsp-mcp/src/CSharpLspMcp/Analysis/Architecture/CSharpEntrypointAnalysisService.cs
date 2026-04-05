@@ -14,6 +14,9 @@ public sealed class CSharpEntrypointAnalysisService
     private static readonly Regex BackgroundServiceImplementationRegex = new(
         @"class\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*BackgroundService\b",
         RegexOptions.Compiled);
+    private static readonly Regex LambdaHandlerRegex = new(
+        @"\bpublic\s+(?:async\s+)?(?:Task(?:<[^>]+>)?|void)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*Handler)\s*\((?<parameters>[^)]*\bILambdaContext\b[^)]*)\)",
+        RegexOptions.Compiled);
     private readonly WorkspaceState _workspaceState;
 
     public CSharpEntrypointAnalysisService(WorkspaceState workspaceState)
@@ -37,7 +40,7 @@ public sealed class CSharpEntrypointAnalysisService
         var effectiveMaxResults = Math.Max(1, maxResults);
         var projects = EnumerateProjects(workspacePath);
         var hostProjects = projects
-            .Where(project => project.ProgramPath != null || project.ProjectType is "worker" or "web" or "executable")
+            .Where(project => project.ProgramPath != null || project.ProjectType is "worker" or "web" or "executable" or "lambda")
             .OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -50,10 +53,11 @@ public sealed class CSharpEntrypointAnalysisService
         var hostedServiceImplementations = includeHostedServices
             ? FindBackgroundServiceImplementations(workspacePath).ToArray()
             : Array.Empty<SourceLineMatch>();
+        var serverlessHandlers = FindServerlessHandlers(workspacePath).ToArray();
 
         return Task.FromResult(
             new EntrypointAnalysisResponse(
-                Summary: $"Found {hostProjects.Length} host project(s), {routeRegistrations.Length} route registration(s), and {hostedServiceRegistrations.Length + hostedServiceImplementations.Length} hosted-service surface(s).",
+                Summary: $"Found {hostProjects.Length} host project(s), {routeRegistrations.Length} route registration(s), {hostedServiceRegistrations.Length + hostedServiceImplementations.Length} hosted-service surface(s), and {serverlessHandlers.Length} serverless handler(s).",
                 SolutionRoot: workspacePath,
                 HostProjects: hostProjects
                     .Take(effectiveMaxResults)
@@ -74,10 +78,12 @@ public sealed class CSharpEntrypointAnalysisService
                 BackgroundServiceImplementations: includeHostedServices
                     ? hostedServiceImplementations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
                     : Array.Empty<SourceLocationItem>(),
+                ServerlessHandlers: serverlessHandlers.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray(),
                 TruncatedHostProjects: Math.Max(0, hostProjects.Length - effectiveMaxResults),
                 TruncatedAspNetRoutes: includeAspNetRoutes ? Math.Max(0, routeRegistrations.Length - effectiveMaxResults) : 0,
                 TruncatedHostedServiceRegistrations: includeHostedServices ? Math.Max(0, hostedServiceRegistrations.Length - effectiveMaxResults) : 0,
-                TruncatedBackgroundServiceImplementations: includeHostedServices ? Math.Max(0, hostedServiceImplementations.Length - effectiveMaxResults) : 0));
+                TruncatedBackgroundServiceImplementations: includeHostedServices ? Math.Max(0, hostedServiceImplementations.Length - effectiveMaxResults) : 0,
+                TruncatedServerlessHandlers: Math.Max(0, serverlessHandlers.Length - effectiveMaxResults)));
     }
 
     private static IReadOnlyCollection<ProjectHostInfo> EnumerateProjects(string workspacePath)
@@ -160,6 +166,15 @@ public sealed class CSharpEntrypointAnalysisService
         }
     }
 
+    private static IEnumerable<SourceLineMatch> FindServerlessHandlers(string workspacePath)
+    {
+        foreach (var filePath in EnumerateSourceFiles(workspacePath))
+        {
+            foreach (var match in FindLineMatches(workspacePath, filePath, LambdaHandlerRegex))
+                yield return match;
+        }
+    }
+
     private static IEnumerable<string> EnumerateSourceFiles(string workspacePath)
     {
         return Directory
@@ -231,6 +246,9 @@ public sealed class CSharpEntrypointAnalysisService
             return "executable";
         }
 
+        if (projectName.Contains("Lambda", StringComparison.OrdinalIgnoreCase))
+            return "lambda";
+
         return hasProgram ? "host" : "classlib";
     }
 
@@ -255,10 +273,12 @@ public sealed class CSharpEntrypointAnalysisService
         SourceLocationItem[] AspNetRoutes,
         SourceLocationItem[] HostedServiceRegistrations,
         SourceLocationItem[] BackgroundServiceImplementations,
+        SourceLocationItem[] ServerlessHandlers,
         int TruncatedHostProjects,
         int TruncatedAspNetRoutes,
         int TruncatedHostedServiceRegistrations,
-        int TruncatedBackgroundServiceImplementations) : IStructuredToolResult;
+        int TruncatedBackgroundServiceImplementations,
+        int TruncatedServerlessHandlers) : IStructuredToolResult;
 
     public sealed record HostProjectItem(
         string Name,

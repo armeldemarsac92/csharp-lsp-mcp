@@ -198,6 +198,8 @@ These conventions apply across the C# MCP surface:
 - `content`: optional unsaved file content; if omitted, tools read from disk; some analyzers also treat empty content as a disk fallback
 - `format`: `structured` by default, `summary` for compact human-readable output
 - `maxResults`, `maxDocuments`, `maxDiagnosticsPerDocument`: hard caps for agent context control
+- `minimumSeverity`: for workspace diagnostics, supports `ALL`, `ERROR`, `WARNING`, `INFO`, and `HINT`
+- `includeGenerated`, `includeTests`, `excludePaths`: filtering controls for higher-level analysis tools such as workspace diagnostics and semantic searches
 
 Important workflow rule:
 
@@ -263,10 +265,16 @@ Stops the C# language server and releases file locks.
 
 Returns pull diagnostics across the current workspace.
 
+This tool supports filtering so LLM agents can suppress low-signal diagnostics from generated files, tests, or noisy path segments in larger solutions.
+
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `maxDocuments` | `int` | No | Maximum number of documents to include. Default: `20`. |
 | `maxDiagnosticsPerDocument` | `int` | No | Maximum diagnostics to include per document. Default: `10`. |
+| `minimumSeverity` | `string` | No | Minimum severity to include: `ALL`, `ERROR`, `WARNING`, `INFO`, or `HINT`. Default: `WARNING`. |
+| `includeGenerated` | `bool` | No | Include generated files such as `obj`, `bin`, and `*.g.cs`. Default: `false`. |
+| `includeTests` | `bool` | No | Include test files and test projects. Default: `true`. |
+| `excludePaths` | `string[]?` | No | Optional file-path substrings to exclude from results. |
 | `format` | `string` | No | Output format. Default: `structured`. |
 
 ## Document Tools
@@ -334,6 +342,8 @@ Finds references to the symbol at a position.
 ### `csharp_symbols`
 
 Lists document symbols for a single C# file.
+
+For top-level `Program.cs` files, this tool can enrich sparse LSP symbol output with heuristic startup-call symbols such as `Add...`, `Use...`, and `Map...` when the underlying server only returns a file-level symbol.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -416,6 +426,8 @@ Finds implementations of the symbol at a given position.
 ### `csharp_call_hierarchy`
 
 Returns incoming and outgoing calls for the symbol at a position.
+
+If `csharp-ls` does not provide outgoing calls for a method, this tool can fall back to definition-based source heuristics and reports that via `usedHeuristicOutgoingFallback` in structured output.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

@@ -69,12 +69,23 @@ public sealed class WorkspaceTools : CSharpToolBase
     public Task<string> GetWorkspaceDiagnosticsAsync(
         [Description("Maximum number of documents to include in the response (default: 20)")] int maxDocuments = 20,
         [Description("Maximum number of diagnostics to show per document (default: 10)")] int maxDiagnosticsPerDocument = 10,
+        [Description("Minimum severity to include: ALL, ERROR, WARNING (default), INFO, or HINT.")] string minimumSeverity = "WARNING",
+        [Description("Include generated files such as obj, bin, and *.g.cs outputs (default: false).")] bool includeGenerated = false,
+        [Description("Include test files and test projects in the results (default: true).")] bool includeTests = true,
+        [Description("Optional path substrings to exclude from the results.")] string[]? excludePaths = null,
         [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
         => ExecuteStructuredToolAsync(
             _logger,
             "csharp_workspace_diagnostics",
             format,
-            ct => _workspaceAnalysisService.GetWorkspaceDiagnosticsAsync(maxDocuments, maxDiagnosticsPerDocument, ct),
+            ct => _workspaceAnalysisService.GetWorkspaceDiagnosticsAsync(
+                maxDocuments,
+                maxDiagnosticsPerDocument,
+                minimumSeverity,
+                includeGenerated,
+                includeTests,
+                excludePaths,
+                ct),
             cancellationToken);
 }

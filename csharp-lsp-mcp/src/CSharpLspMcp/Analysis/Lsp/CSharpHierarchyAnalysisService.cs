@@ -79,25 +79,56 @@ public sealed class CSharpHierarchyAnalysisService
                 Outgoing: Array.Empty<CallHierarchyEdgeItem>(),
                 TruncatedIncoming: 0,
                 TruncatedOutgoing: 0,
-                PreparedRootCount: 0);
+                PreparedRootCount: 0,
+                UsedHeuristicOutgoingFallback: false);
         }
 
         var item = items[0];
         var incoming = await _lspClient.GetIncomingCallsAsync(item, cancellationToken) ?? Array.Empty<CallHierarchyIncomingCall>();
         var outgoing = await _lspClient.GetOutgoingCallsAsync(item, cancellationToken) ?? Array.Empty<CallHierarchyOutgoingCall>();
+        var fallbackRange = outgoing.Length == 0
+            ? await ResolveFallbackSymbolRangeAsync(absolutePath, line, character, item.Range, cancellationToken)
+            : item.Range;
+        var heuristicOutgoing = outgoing.Length == 0
+            ? await CSharpSourceHeuristics.ResolveOutgoingCallsAsync(
+                _lspClient,
+                absolutePath,
+                content,
+                fallbackRange,
+                CSharpSourceHeuristics.GetInvocationAnchorName(item.Name),
+                cancellationToken)
+            : Array.Empty<CSharpSourceHeuristics.HeuristicOutgoingCall>();
         var effectiveMaxResults = Math.Max(1, maxResults);
         return new CallHierarchyResponse(
-            Summary: $"Prepared call hierarchy for {item.Name} with {incoming.Length} incoming and {outgoing.Length} outgoing call(s).",
+            Summary: heuristicOutgoing.Length > 0
+                ? $"Prepared call hierarchy for {item.Name} with {incoming.Length} incoming call(s) and {heuristicOutgoing.Length} heuristic outgoing call(s)."
+                : $"Prepared call hierarchy for {item.Name} with {incoming.Length} incoming and {outgoing.Length} outgoing call(s).",
             Root: MapHierarchyItem(item),
             Incoming: incoming.Take(effectiveMaxResults)
                 .Select(call => MapCallHierarchyEdge(call.From, call.FromRanges.FirstOrDefault()?.Start))
                 .ToArray(),
-            Outgoing: outgoing.Take(effectiveMaxResults)
-                .Select(call => MapCallHierarchyEdge(call.To, call.FromRanges.FirstOrDefault()?.Start))
-                .ToArray(),
+            Outgoing: heuristicOutgoing.Length > 0
+                ? heuristicOutgoing.Take(effectiveMaxResults).Select(MapHeuristicOutgoingCall).ToArray()
+                : outgoing.Take(effectiveMaxResults)
+                    .Select(call => MapCallHierarchyEdge(call.To, call.FromRanges.FirstOrDefault()?.Start))
+                    .ToArray(),
             TruncatedIncoming: Math.Max(0, incoming.Length - effectiveMaxResults),
-            TruncatedOutgoing: Math.Max(0, outgoing.Length - effectiveMaxResults),
-            PreparedRootCount: items.Length);
+            TruncatedOutgoing: heuristicOutgoing.Length > 0
+                ? Math.Max(0, heuristicOutgoing.Length - effectiveMaxResults)
+                : Math.Max(0, outgoing.Length - effectiveMaxResults),
+            PreparedRootCount: items.Length,
+            UsedHeuristicOutgoingFallback: heuristicOutgoing.Length > 0);
+    }
+
+    private async Task<CSharpLspMcp.Lsp.Range> ResolveFallbackSymbolRangeAsync(
+        string absolutePath,
+        int line,
+        int character,
+        CSharpLspMcp.Lsp.Range fallbackRange,
+        CancellationToken cancellationToken)
+    {
+        var documentSymbols = await _lspClient.GetDocumentSymbolsAsync(absolutePath, cancellationToken);
+        return CSharpSourceHeuristics.FindContainingSymbolRange(documentSymbols, line, character) ?? fallbackRange;
     }
 
     public async Task<TypeHierarchyResponse> GetTypeHierarchyAsync(
@@ -177,6 +208,15 @@ public sealed class CSharpHierarchyAnalysisService
             location.Character + 1);
     }
 
+    private static CallHierarchyEdgeItem MapHeuristicOutgoingCall(CSharpSourceHeuristics.HeuristicOutgoingCall call)
+        => new(
+            call.Name,
+            call.Kind,
+            call.Detail,
+            call.FilePath,
+            call.Line,
+            call.Character);
+
     private static bool SupportsTypeHierarchyImplementations(SymbolKind kind)
         => kind is SymbolKind.Interface or SymbolKind.Class;
 
@@ -193,7 +233,8 @@ public sealed class CSharpHierarchyAnalysisService
         CallHierarchyEdgeItem[] Outgoing,
         int TruncatedIncoming,
         int TruncatedOutgoing,
-        int PreparedRootCount) : IStructuredToolResult;
+        int PreparedRootCount,
+        bool UsedHeuristicOutgoingFallback) : IStructuredToolResult;
 
     public sealed record TypeHierarchyResponse(
         string Summary,

@@ -26,6 +26,9 @@ public sealed class CSharpRegistrationAnalysisService
     private static readonly Regex ConstructorRegex = new(
         @"(?<prefix>\b(?:public|internal|private|protected)\s+)(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?<parameters>[^)]*)\)",
         RegexOptions.Compiled);
+    private static readonly Regex GenericConsumerInvocationRegex = new(
+        @"\.(?<method>AddHttpMessageHandler)\s*<(?<type>[^>]+)>\s*\(",
+        RegexOptions.Compiled);
     private readonly WorkspaceState _workspaceState;
 
     public CSharpRegistrationAnalysisService(WorkspaceState workspaceState)
@@ -53,6 +56,17 @@ public sealed class CSharpRegistrationAnalysisService
             .ThenBy(registration => registration.RelativePath, StringComparer.OrdinalIgnoreCase)
             .ThenBy(registration => registration.LineNumber)
             .ToArray();
+        var ambiguousServiceTypes = registrations
+            .GroupBy(registration => GetSimpleTypeName(registration.ServiceType), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Select(registration => registration.Project).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ambiguousImplementationTypes = registrations
+            .Where(registration => !string.IsNullOrWhiteSpace(registration.ImplementationType))
+            .GroupBy(registration => GetSimpleTypeName(registration.ImplementationType!), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Select(registration => registration.Project).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (registrations.Length == 0)
         {
@@ -79,7 +93,7 @@ public sealed class CSharpRegistrationAnalysisService
             {
                 var matchingConsumers = includeConsumers
                     ? consumers
-                        .Where(consumer => RegistrationMatchesConsumer(registration, consumer))
+                        .Where(consumer => RegistrationMatchesConsumer(registration, consumer, ambiguousServiceTypes, ambiguousImplementationTypes))
                         .OrderBy(consumer => consumer.RelativePath, StringComparer.OrdinalIgnoreCase)
                         .ThenBy(consumer => consumer.LineNumber)
                         .ToArray()
@@ -89,6 +103,7 @@ public sealed class CSharpRegistrationAnalysisService
                     registration.ServiceType,
                     registration.ImplementationType,
                     registration.Lifetime,
+                    registration.Project,
                     registration.RelativePath,
                     registration.LineNumber,
                     registration.SourceText,
@@ -96,6 +111,7 @@ public sealed class CSharpRegistrationAnalysisService
                     registration.IsEnumerable,
                     matchingConsumers.Take(effectiveMaxResults)
                         .Select(consumer => new ConsumerItem(
+                            consumer.Project,
                             consumer.RelativePath,
                             consumer.LineNumber,
                             consumer.DisplayText,
@@ -134,6 +150,7 @@ public sealed class CSharpRegistrationAnalysisService
 
     private static IEnumerable<RegistrationSite> ParseGenericRegistrations(string workspacePath, string filePath, string content)
     {
+        var project = GetProjectKey(workspacePath, filePath);
         foreach (Match match in GenericRegistrationRegex.Matches(content))
         {
             var genericArguments = SplitDelimited(match.Groups["genericArgs"].Value);
@@ -151,6 +168,7 @@ public sealed class CSharpRegistrationAnalysisService
                 serviceType,
                 implementationType,
                 match.Groups["lifetime"].Value,
+                project,
                 Path.GetRelativePath(workspacePath, filePath),
                 lineNumber,
                 sourceText,
@@ -161,6 +179,7 @@ public sealed class CSharpRegistrationAnalysisService
 
     private static IEnumerable<RegistrationSite> ParseEnumerableRegistrations(string workspacePath, string filePath, string content)
     {
+        var project = GetProjectKey(workspacePath, filePath);
         foreach (Match match in EnumerableRegistrationRegex.Matches(content))
         {
             var lineNumber = GetLineNumber(content, match.Index);
@@ -168,6 +187,7 @@ public sealed class CSharpRegistrationAnalysisService
                 NormalizeTypeName(match.Groups["service"].Value),
                 NormalizeTypeName(match.Groups["implementation"].Value),
                 match.Groups["lifetime"].Value,
+                project,
                 Path.GetRelativePath(workspacePath, filePath),
                 lineNumber,
                 NormalizeSourceText(match.Value),
@@ -185,6 +205,7 @@ public sealed class CSharpRegistrationAnalysisService
             var content = File.ReadAllText(filePath);
             consumers.AddRange(ParsePrimaryConstructorConsumers(workspacePath, filePath, content));
             consumers.AddRange(ParseConstructorConsumers(workspacePath, filePath, content));
+            consumers.AddRange(ParseGenericInvocationConsumers(workspacePath, filePath, content));
         }
 
         return consumers
@@ -194,6 +215,7 @@ public sealed class CSharpRegistrationAnalysisService
 
     private static IEnumerable<ConsumerSite> ParsePrimaryConstructorConsumers(string workspacePath, string filePath, string content)
     {
+        var project = GetProjectKey(workspacePath, filePath);
         foreach (Match match in TypeDeclarationWithPrimaryConstructorRegex.Matches(content))
         {
             var consumerName = match.Groups["name"].Value;
@@ -202,6 +224,7 @@ public sealed class CSharpRegistrationAnalysisService
                 continue;
 
             yield return new ConsumerSite(
+                project,
                 Path.GetRelativePath(workspacePath, filePath),
                 GetLineNumber(content, match.Index),
                 $"{consumerName}({string.Join(", ", parameterTypes)})",
@@ -211,6 +234,7 @@ public sealed class CSharpRegistrationAnalysisService
 
     private static IEnumerable<ConsumerSite> ParseConstructorConsumers(string workspacePath, string filePath, string content)
     {
+        var project = GetProjectKey(workspacePath, filePath);
         foreach (Match match in ConstructorRegex.Matches(content))
         {
             var consumerName = match.Groups["name"].Value;
@@ -219,10 +243,26 @@ public sealed class CSharpRegistrationAnalysisService
                 continue;
 
             yield return new ConsumerSite(
+                project,
                 Path.GetRelativePath(workspacePath, filePath),
                 GetLineNumber(content, match.Index),
                 $"{consumerName}({string.Join(", ", parameterTypes)})",
                 parameterTypes);
+        }
+    }
+
+    private static IEnumerable<ConsumerSite> ParseGenericInvocationConsumers(string workspacePath, string filePath, string content)
+    {
+        var project = GetProjectKey(workspacePath, filePath);
+        foreach (Match match in GenericConsumerInvocationRegex.Matches(content))
+        {
+            var consumedType = NormalizeTypeName(match.Groups["type"].Value);
+            yield return new ConsumerSite(
+                project,
+                Path.GetRelativePath(workspacePath, filePath),
+                GetLineNumber(content, match.Index),
+                $"{match.Groups["method"].Value}<{consumedType}>()",
+                [consumedType]);
         }
     }
 
@@ -257,12 +297,31 @@ public sealed class CSharpRegistrationAnalysisService
         return string.Join(" ", tokens[..^1]);
     }
 
-    private static bool RegistrationMatchesConsumer(RegistrationSite registration, ConsumerSite consumer)
+    private static bool RegistrationMatchesConsumer(
+        RegistrationSite registration,
+        ConsumerSite consumer,
+        IReadOnlySet<string> ambiguousServiceTypes,
+        IReadOnlySet<string> ambiguousImplementationTypes)
     {
         return consumer.ParameterTypes.Any(parameterType =>
-            TypeExpressionContains(parameterType, registration.ServiceType) ||
+            IsCandidateMatch(parameterType, registration.ServiceType, registration.Project, consumer.Project, ambiguousServiceTypes) ||
             (!string.IsNullOrWhiteSpace(registration.ImplementationType) &&
-             TypeExpressionContains(parameterType, registration.ImplementationType)));
+             IsCandidateMatch(parameterType, registration.ImplementationType, registration.Project, consumer.Project, ambiguousImplementationTypes)));
+    }
+
+    private static bool IsCandidateMatch(
+        string parameterType,
+        string candidateType,
+        string registrationProject,
+        string consumerProject,
+        IReadOnlySet<string> ambiguousTypeNames)
+    {
+        if (!TypeExpressionContains(parameterType, candidateType))
+            return false;
+
+        var simpleType = GetSimpleTypeName(candidateType);
+        return !ambiguousTypeNames.Contains(simpleType) ||
+               string.Equals(registrationProject, consumerProject, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TypeExpressionContains(string parameterType, string candidateType)
@@ -336,6 +395,25 @@ public sealed class CSharpRegistrationAnalysisService
             .EnumerateFiles(workspacePath, "*.cs", SearchOption.AllDirectories)
             .Where(path => !ContainsIgnoredPathSegment(path))
             .ToArray();
+    }
+
+    private static string GetProjectKey(string workspacePath, string filePath)
+    {
+        var currentDirectory = Path.GetDirectoryName(filePath);
+        while (!string.IsNullOrWhiteSpace(currentDirectory) &&
+               currentDirectory.StartsWith(workspacePath, StringComparison.OrdinalIgnoreCase))
+        {
+            var projectFile = Directory
+                .EnumerateFiles(currentDirectory, "*.csproj", SearchOption.TopDirectoryOnly)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+            if (projectFile != null)
+                return Path.GetFileNameWithoutExtension(projectFile);
+
+            currentDirectory = Path.GetDirectoryName(currentDirectory);
+        }
+
+        return Path.GetFileName(Path.GetDirectoryName(filePath) ?? workspacePath);
     }
 
     private static bool ContainsIgnoredPathSegment(string path)
@@ -418,6 +496,7 @@ public sealed class CSharpRegistrationAnalysisService
         string ServiceType,
         string? ImplementationType,
         string Lifetime,
+        string Project,
         string RelativePath,
         int LineNumber,
         string SourceText,
@@ -425,6 +504,7 @@ public sealed class CSharpRegistrationAnalysisService
         bool IsEnumerable);
 
     private sealed record ConsumerSite(
+        string Project,
         string RelativePath,
         int LineNumber,
         string DisplayText,
@@ -443,6 +523,7 @@ public sealed class CSharpRegistrationAnalysisService
         string ServiceType,
         string? ImplementationType,
         string Lifetime,
+        string Project,
         string RelativePath,
         int LineNumber,
         string SourceText,
@@ -452,6 +533,7 @@ public sealed class CSharpRegistrationAnalysisService
         int TruncatedConsumers);
 
     public sealed record ConsumerItem(
+        string Project,
         string RelativePath,
         int LineNumber,
         string DisplayText,

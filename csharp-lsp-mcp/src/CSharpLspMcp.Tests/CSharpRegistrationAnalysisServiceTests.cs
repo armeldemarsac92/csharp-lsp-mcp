@@ -196,4 +196,171 @@ public sealed class CSharpRegistrationAnalysisServiceTests
             Directory.Delete(workspacePath, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task FindRegistrationsAsync_DoesNotCrossWireDuplicateServiceNamesAcrossProjects()
+    {
+        var workspacePath = Path.Combine(Path.GetTempPath(), "csharp-lsp-mcp-registrations-duplicates-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspacePath);
+
+        try
+        {
+            var workerADirectory = Path.Combine(workspacePath, "src", "Worker.A");
+            var workerBDirectory = Path.Combine(workspacePath, "src", "Worker.B");
+            Directory.CreateDirectory(workerADirectory);
+            Directory.CreateDirectory(workerBDirectory);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(workerADirectory, "Worker.A.csproj"),
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(
+                Path.Combine(workerBDirectory, "Worker.B.csproj"),
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(workerADirectory, "Services.cs"),
+                """
+                using Microsoft.Extensions.DependencyInjection;
+
+                namespace Worker.A;
+
+                public interface IDbRepository;
+                public sealed class DbRepository : IDbRepository;
+
+                public static class WorkerACollectionExtensions
+                {
+                    public static IServiceCollection AddWorkerA(this IServiceCollection services)
+                    {
+                        services.AddScoped<IDbRepository, DbRepository>();
+                        return services;
+                    }
+                }
+
+                public sealed class WorkerAConsumer
+                {
+                    public WorkerAConsumer(IDbRepository repository)
+                    {
+                    }
+                }
+                """);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(workerBDirectory, "Services.cs"),
+                """
+                using Microsoft.Extensions.DependencyInjection;
+
+                namespace Worker.B;
+
+                public interface IDbRepository;
+                public sealed class DbRepository : IDbRepository;
+
+                public static class WorkerBCollectionExtensions
+                {
+                    public static IServiceCollection AddWorkerB(this IServiceCollection services)
+                    {
+                        services.AddSingleton<IDbRepository, DbRepository>();
+                        return services;
+                    }
+                }
+
+                public sealed class WorkerBConsumer
+                {
+                    public WorkerBConsumer(IDbRepository repository)
+                    {
+                    }
+                }
+                """);
+
+            var workspaceState = new WorkspaceState();
+            workspaceState.SetPath(workspacePath);
+            var service = new CSharpRegistrationAnalysisService(workspaceState);
+
+            var summary = await service.FindRegistrationsAsync("IDbRepository", true, 10, CancellationToken.None);
+
+            Assert.Equal(2, summary.Registrations.Length);
+            var workerARegistration = Assert.Single(summary.Registrations.Where(item => item.Project == "Worker.A"));
+            var workerBRegistration = Assert.Single(summary.Registrations.Where(item => item.Project == "Worker.B"));
+
+            Assert.All(workerARegistration.Consumers, consumer => Assert.Equal("Worker.A", consumer.Project));
+            Assert.All(workerBRegistration.Consumers, consumer => Assert.Equal("Worker.B", consumer.Project));
+            Assert.Contains(workerARegistration.Consumers, consumer => consumer.DisplayText.Contains("WorkerAConsumer(IDbRepository)", StringComparison.Ordinal));
+            Assert.Contains(workerBRegistration.Consumers, consumer => consumer.DisplayText.Contains("WorkerBConsumer(IDbRepository)", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(workspacePath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task FindRegistrationsAsync_TracksHttpMessageHandlerConsumers()
+    {
+        var workspacePath = Path.Combine(Path.GetTempPath(), "csharp-lsp-mcp-registrations-http-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspacePath);
+
+        try
+        {
+            var sourceDirectory = Path.Combine(workspacePath, "src", "Sample.Api");
+            Directory.CreateDirectory(sourceDirectory);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(sourceDirectory, "Sample.Api.csproj"),
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(sourceDirectory, "HttpClients.cs"),
+                """
+                using System.Net.Http;
+                using Microsoft.Extensions.DependencyInjection;
+
+                namespace Sample.Api;
+
+                public interface IFooClient;
+                public sealed class FooClient : IFooClient;
+                public sealed class AuthHeaderHandler : DelegatingHandler;
+
+                public static class ServiceCollectionExtensions
+                {
+                    public static IServiceCollection AddSample(this IServiceCollection services)
+                    {
+                        services.AddTransient<AuthHeaderHandler>();
+                        services.AddHttpClient<IFooClient, FooClient>()
+                            .AddHttpMessageHandler<AuthHeaderHandler>();
+                        return services;
+                    }
+                }
+                """);
+
+            var workspaceState = new WorkspaceState();
+            workspaceState.SetPath(workspacePath);
+            var service = new CSharpRegistrationAnalysisService(workspaceState);
+
+            var summary = await service.FindRegistrationsAsync("AuthHeaderHandler", true, 10, CancellationToken.None);
+
+            var registration = Assert.Single(summary.Registrations);
+            Assert.Contains(registration.Consumers, consumer => consumer.DisplayText.Contains("AddHttpMessageHandler<AuthHeaderHandler>()", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(workspacePath, recursive: true);
+        }
+    }
 }
