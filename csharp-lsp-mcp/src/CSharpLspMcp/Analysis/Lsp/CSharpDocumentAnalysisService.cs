@@ -274,7 +274,7 @@ public sealed class CSharpDocumentAnalysisService
         return sb.ToString();
     }
 
-    private static string FormatHoverContent(object contents)
+    internal static string FormatHoverContent(object contents)
     {
         if (contents is JsonElement element)
         {

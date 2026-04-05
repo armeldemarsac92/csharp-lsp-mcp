@@ -2,6 +2,7 @@ using CSharpLspMcp.Lsp;
 using CSharpLspMcp.Analysis.Architecture;
 using CSharpLspMcp.Analysis.Lsp;
 using CSharpLspMcp.Tools;
+using CSharpLspMcp.Tools.Analysis;
 using CSharpLspMcp.Tools.Architecture;
 using CSharpLspMcp.Tools.Document;
 using CSharpLspMcp.Tools.Hierarchy;
@@ -63,6 +64,7 @@ public class Program
             builder.Services.AddSingleton<CSharpHierarchyAnalysisService>();
             builder.Services.AddSingleton<CSharpWorkspaceAnalysisService>();
             builder.Services.AddSingleton<CSharpProjectOverviewAnalysisService>();
+            builder.Services.AddSingleton<CSharpSymbolAnalysisService>();
 
             // Configure MCP server with official SDK
             builder.Services
@@ -80,6 +82,7 @@ public class Program
                 .WithTools<SearchTools>()
                 .WithTools<HierarchyTools>()
                 .WithTools<ArchitectureTools>()
+                .WithTools<AnalysisTools>()
                 .WithTools<XamlTools>();
 
             var app = builder.Build();
@@ -147,6 +150,7 @@ AVAILABLE TOOLS:
     csharp_call_hierarchy - Get incoming and outgoing calls
     csharp_type_hierarchy - Get supertypes and subtypes for a type
     csharp_project_overview - Summarize projects, dependencies, and entrypoints
+    csharp_analyze_symbol - Build a one-shot symbol analysis report
     csharp_code_actions   - Get available code actions
     csharp_rename         - Preview symbol rename
     csharp_workspace_diagnostics - Get pull diagnostics across the workspace
