@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Workspace;
 
 namespace CSharpLspMcp.Analysis.Architecture;
@@ -32,7 +33,7 @@ public sealed class CSharpRegistrationAnalysisService
         _workspaceState = workspaceState;
     }
 
-    public Task<string> FindRegistrationsAsync(
+    public Task<RegistrationAnalysisResponse> FindRegistrationsAsync(
         string? query,
         bool includeConsumers,
         int maxResults,
@@ -40,7 +41,7 @@ public sealed class CSharpRegistrationAnalysisService
     {
         var workspacePath = _workspaceState.CurrentPath;
         if (string.IsNullOrWhiteSpace(workspacePath))
-            return Task.FromResult("Error: Workspace is not set. Call csharp_set_workspace first.");
+            throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -55,66 +56,64 @@ public sealed class CSharpRegistrationAnalysisService
 
         if (registrations.Length == 0)
         {
-            return Task.FromResult(string.IsNullOrWhiteSpace(query)
-                ? "No DI registrations were found under the current workspace."
-                : $"No DI registrations matched '{query}'.");
+            return Task.FromResult(
+                new RegistrationAnalysisResponse(
+                    Summary: string.IsNullOrWhiteSpace(query)
+                        ? "No DI registrations were found under the current workspace."
+                        : $"No DI registrations matched '{query}'.",
+                    SolutionRoot: workspacePath,
+                    Query: query,
+                    IncludeConsumers: includeConsumers,
+                    TotalRegistrations: 0,
+                    Registrations: Array.Empty<RegistrationItem>(),
+                    TruncatedRegistrations: 0));
         }
 
         var consumers = includeConsumers
             ? FindConsumers(workspacePath)
             : Array.Empty<ConsumerSite>();
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"Solution root: {workspacePath}");
-
-        if (!string.IsNullOrWhiteSpace(query))
-            sb.AppendLine($"Query: {query}");
-
-        sb.AppendLine();
-        sb.AppendLine($"Registrations ({registrations.Length}):");
-
-        foreach (var registration in registrations.Take(effectiveMaxResults))
-        {
-            sb.AppendLine($"• {registration.ServiceType} [{registration.Lifetime}]");
-            sb.AppendLine($"  Registration: {registration.RelativePath}:{registration.LineNumber}");
-
-            if (!string.IsNullOrWhiteSpace(registration.ImplementationType))
-                sb.AppendLine($"  Implementation: {registration.ImplementationType}");
-
-            if (registration.IsFactory)
-                sb.AppendLine("  Kind: factory");
-            else if (registration.IsEnumerable)
-                sb.AppendLine("  Kind: enumerable");
-
-            sb.AppendLine($"  Source: {registration.SourceText}");
-
-            if (!includeConsumers)
-                continue;
-
-            var matchingConsumers = consumers
-                .Where(consumer => RegistrationMatchesConsumer(registration, consumer))
-                .OrderBy(consumer => consumer.RelativePath, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(consumer => consumer.LineNumber)
-                .ToArray();
-
-            sb.AppendLine($"  Consumers ({matchingConsumers.Length}):");
-            if (matchingConsumers.Length == 0)
+        var items = registrations
+            .Take(effectiveMaxResults)
+            .Select(registration =>
             {
-                sb.AppendLine("  None.");
-                continue;
-            }
+                var matchingConsumers = includeConsumers
+                    ? consumers
+                        .Where(consumer => RegistrationMatchesConsumer(registration, consumer))
+                        .OrderBy(consumer => consumer.RelativePath, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(consumer => consumer.LineNumber)
+                        .ToArray()
+                    : Array.Empty<ConsumerSite>();
 
-            foreach (var consumer in matchingConsumers.Take(effectiveMaxResults))
-                sb.AppendLine($"  • {consumer.RelativePath}:{consumer.LineNumber} {consumer.DisplayText}");
+                return new RegistrationItem(
+                    registration.ServiceType,
+                    registration.ImplementationType,
+                    registration.Lifetime,
+                    registration.RelativePath,
+                    registration.LineNumber,
+                    registration.SourceText,
+                    registration.IsFactory,
+                    registration.IsEnumerable,
+                    matchingConsumers.Take(effectiveMaxResults)
+                        .Select(consumer => new ConsumerItem(
+                            consumer.RelativePath,
+                            consumer.LineNumber,
+                            consumer.DisplayText,
+                            consumer.ParameterTypes))
+                        .ToArray(),
+                    Math.Max(0, matchingConsumers.Length - effectiveMaxResults));
+            })
+            .ToArray();
 
-            if (matchingConsumers.Length > effectiveMaxResults)
-                sb.AppendLine($"  ... and {matchingConsumers.Length - effectiveMaxResults} more");
-        }
-
-        if (registrations.Length > effectiveMaxResults)
-            sb.AppendLine($"... and {registrations.Length - effectiveMaxResults} more");
-
-        return Task.FromResult(sb.ToString().TrimEnd());
+        return Task.FromResult(
+            new RegistrationAnalysisResponse(
+                Summary: $"Found {registrations.Length} DI registration(s){(includeConsumers ? " with consumer tracing" : string.Empty)}.",
+                SolutionRoot: workspacePath,
+                Query: query,
+                IncludeConsumers: includeConsumers,
+                TotalRegistrations: registrations.Length,
+                Registrations: items,
+                TruncatedRegistrations: Math.Max(0, registrations.Length - effectiveMaxResults)));
     }
 
     private static IReadOnlyCollection<RegistrationSite> FindRegistrations(string workspacePath)
@@ -426,6 +425,33 @@ public sealed class CSharpRegistrationAnalysisService
         bool IsEnumerable);
 
     private sealed record ConsumerSite(
+        string RelativePath,
+        int LineNumber,
+        string DisplayText,
+        string[] ParameterTypes);
+
+    public sealed record RegistrationAnalysisResponse(
+        string Summary,
+        string SolutionRoot,
+        string? Query,
+        bool IncludeConsumers,
+        int TotalRegistrations,
+        RegistrationItem[] Registrations,
+        int TruncatedRegistrations) : IStructuredToolResult;
+
+    public sealed record RegistrationItem(
+        string ServiceType,
+        string? ImplementationType,
+        string Lifetime,
+        string RelativePath,
+        int LineNumber,
+        string SourceText,
+        bool IsFactory,
+        bool IsEnumerable,
+        ConsumerItem[] Consumers,
+        int TruncatedConsumers);
+
+    public sealed record ConsumerItem(
         string RelativePath,
         int LineNumber,
         string DisplayText,

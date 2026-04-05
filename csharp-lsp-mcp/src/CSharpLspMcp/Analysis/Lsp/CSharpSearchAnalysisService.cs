@@ -1,4 +1,4 @@
-using System.Text;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Lsp;
 
 namespace CSharpLspMcp.Analysis.Lsp;
@@ -12,28 +12,48 @@ public sealed class CSharpSearchAnalysisService
         _lspClient = lspClient;
     }
 
-    public async Task<string> SearchSymbolsAsync(string query, int maxResults, CancellationToken cancellationToken)
+    public async Task<SearchSymbolsResponse> SearchSymbolsAsync(string query, int maxResults, CancellationToken cancellationToken)
     {
         var symbols = await _lspClient.SearchWorkspaceSymbolsAsync(query, cancellationToken);
         if (symbols == null || symbols.Length == 0)
-            return "No workspace symbols found.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {symbols.Length} workspace symbol(s):\n");
-
-        foreach (var symbol in symbols.Take(maxResults))
         {
-            sb.AppendLine($"• {symbol.Name} ({symbol.Kind})");
-            if (!string.IsNullOrEmpty(symbol.ContainerName))
-                sb.AppendLine($"  Container: {symbol.ContainerName}");
-
-            var path = new Uri(symbol.Location.Uri).LocalPath;
-            sb.AppendLine($"  {path}:{symbol.Location.Range.Start.Line + 1}");
+            return new SearchSymbolsResponse(
+                Summary: "No workspace symbols found.",
+                Query: query,
+                TotalMatches: 0,
+                Symbols: Array.Empty<WorkspaceSymbolItem>(),
+                TruncatedMatches: 0);
         }
 
-        if (symbols.Length > maxResults)
-            sb.AppendLine($"\n... and {symbols.Length - maxResults} more");
-
-        return sb.ToString();
+        var effectiveMaxResults = Math.Max(1, maxResults);
+        return new SearchSymbolsResponse(
+            Summary: $"Found {symbols.Length} workspace symbol(s).",
+            Query: query,
+            TotalMatches: symbols.Length,
+            Symbols: symbols.Take(effectiveMaxResults)
+                .Select(symbol => new WorkspaceSymbolItem(
+                    symbol.Name,
+                    symbol.Kind.ToString(),
+                    symbol.ContainerName,
+                    new Uri(symbol.Location.Uri).LocalPath,
+                    symbol.Location.Range.Start.Line + 1,
+                    symbol.Location.Range.Start.Character + 1))
+                .ToArray(),
+            TruncatedMatches: Math.Max(0, symbols.Length - effectiveMaxResults));
     }
+
+    public sealed record SearchSymbolsResponse(
+        string Summary,
+        string Query,
+        int TotalMatches,
+        WorkspaceSymbolItem[] Symbols,
+        int TruncatedMatches) : IStructuredToolResult;
+
+    public sealed record WorkspaceSymbolItem(
+        string Name,
+        string Kind,
+        string? ContainerName,
+        string FilePath,
+        int Line,
+        int Character);
 }

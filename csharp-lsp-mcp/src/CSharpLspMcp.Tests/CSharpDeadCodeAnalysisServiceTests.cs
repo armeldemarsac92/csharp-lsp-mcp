@@ -57,14 +57,11 @@ public sealed class CSharpDeadCodeAnalysisServiceTests
 
             var summary = await service.FindDeadCodeCandidatesAsync(true, true, true, 20, CancellationToken.None);
 
-            Assert.Contains("[private-field]", summary);
-            Assert.Contains("_unusedField", summary);
-            Assert.Contains("[private-method]", summary);
-            Assert.Contains("RemoveExpiredCache", summary);
-            Assert.Contains("[internal-type]", summary);
-            Assert.Contains("InternalHelper", summary);
-            Assert.DoesNotContain("FormatValue", summary);
-            Assert.DoesNotContain("UsedInternalHelper", summary);
+            Assert.Contains(summary.Candidates, candidate => candidate.Kind == "private-field" && candidate.Name == "_unusedField");
+            Assert.Contains(summary.Candidates, candidate => candidate.Kind == "private-method" && candidate.Name == "RemoveExpiredCache");
+            Assert.Contains(summary.Candidates, candidate => candidate.Kind == "internal-type" && candidate.Name == "InternalHelper");
+            Assert.DoesNotContain(summary.Candidates, candidate => candidate.Name == "FormatValue");
+            Assert.DoesNotContain(summary.Candidates, candidate => candidate.Name == "UsedInternalHelper");
         }
         finally
         {
@@ -99,9 +96,7 @@ public sealed class CSharpDeadCodeAnalysisServiceTests
 
             var summary = await service.FindDeadCodeCandidatesAsync(false, true, true, 20, CancellationToken.None);
 
-            Assert.Contains("[internal-type]", summary);
-            Assert.DoesNotContain("[private-method]", summary);
-            Assert.DoesNotContain("[private-field]", summary);
+            Assert.All(summary.Candidates, candidate => Assert.Equal("internal-type", candidate.Kind));
         }
         finally
         {
@@ -148,7 +143,7 @@ public sealed class CSharpDeadCodeAnalysisServiceTests
 
             var summary = await service.FindDeadCodeCandidatesAsync(false, true, true, 20, CancellationToken.None);
 
-            Assert.DoesNotContain("EndpointExtensions", summary);
+            Assert.DoesNotContain(summary.Candidates, candidate => candidate.Name == "EndpointExtensions");
         }
         finally
         {
@@ -198,7 +193,7 @@ public sealed class CSharpDeadCodeAnalysisServiceTests
 
             var summary = await service.FindDeadCodeCandidatesAsync(true, true, false, 20, CancellationToken.None);
 
-            Assert.DoesNotContain("BuildFixture", summary);
+            Assert.DoesNotContain(summary.Candidates, candidate => candidate.Name == "BuildFixture");
         }
         finally
         {

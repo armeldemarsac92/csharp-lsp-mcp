@@ -59,10 +59,11 @@ public sealed class CSharpTestMapAnalysisServiceTests
 
             var summary = await service.GetTestMapAsync("src/Sample.App/TopicDiscoveryService.cs", null, 10, CancellationToken.None);
 
-            Assert.Contains("Target: src/Sample.App/TopicDiscoveryService.cs", summary);
-            Assert.Contains("TopicDiscoveryServiceTests.cs [score:", summary);
-            Assert.Contains("MeshtasticIngestionServiceTests.cs [score:", summary);
-            Assert.Contains("Reasons: file:TopicDiscoveryService", summary);
+            Assert.Equal("src/Sample.App/TopicDiscoveryService.cs", summary.Target);
+            Assert.Equal(2, summary.TotalMatches);
+            Assert.Contains(summary.Matches, match => match.RelativePath.EndsWith("TopicDiscoveryServiceTests.cs", StringComparison.Ordinal));
+            Assert.Contains(summary.Matches, match => match.RelativePath.EndsWith("MeshtasticIngestionServiceTests.cs", StringComparison.Ordinal));
+            Assert.Contains(summary.Matches.SelectMany(match => match.Reasons), reason => reason == "file:TopicDiscoveryService");
         }
         finally
         {
@@ -97,9 +98,9 @@ public sealed class CSharpTestMapAnalysisServiceTests
 
             var summary = await service.GetTestMapAsync(null, "Sample.Auth.AppUserPrincipalFactory", 10, CancellationToken.None);
 
-            Assert.Contains("Target: Sample.Auth.AppUserPrincipalFactory", summary);
-            Assert.Contains("AppUserPrincipalFactoryTests.cs [score:", summary);
-            Assert.Contains("content:", summary);
+            Assert.Equal("Sample.Auth.AppUserPrincipalFactory", summary.Target);
+            Assert.Contains(summary.Matches, match => match.RelativePath.EndsWith("AppUserPrincipalFactoryTests.cs", StringComparison.Ordinal));
+            Assert.Contains(summary.Matches.SelectMany(match => match.Reasons), reason => reason.StartsWith("content:", StringComparison.Ordinal));
         }
         finally
         {
@@ -117,9 +118,9 @@ public sealed class CSharpTestMapAnalysisServiceTests
         {
             var service = CreateService(workspacePath);
 
-            var summary = await service.GetTestMapAsync(null, null, 10, CancellationToken.None);
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.GetTestMapAsync(null, null, 10, CancellationToken.None));
 
-            Assert.Contains("Provide either filePath or symbolQuery", summary);
+            Assert.Contains("Provide either filePath or symbolQuery", ex.Message);
         }
         finally
         {

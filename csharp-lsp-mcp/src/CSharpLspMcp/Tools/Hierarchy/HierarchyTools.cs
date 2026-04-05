@@ -25,12 +25,14 @@ public sealed class HierarchyTools : CSharpToolBase
         [Description("Absolute path to the C# file")] string filePath,
         [Description("0-based line number")] int line,
         [Description("0-based character position")] int character,
-        [Description("Content of the file (optional)")] string? content,
+        [Description("Content of the file (optional)")] string? content = null,
         [Description("Maximum number of results to return (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_find_implementations",
+            format,
             ct => _hierarchyAnalysisService.FindImplementationsAsync(filePath, line, character, content, maxResults, ct),
             cancellationToken);
 
@@ -40,12 +42,14 @@ public sealed class HierarchyTools : CSharpToolBase
         [Description("Absolute path to the C# file")] string filePath,
         [Description("0-based line number")] int line,
         [Description("0-based character position")] int character,
-        [Description("Content of the file (optional)")] string? content,
+        [Description("Content of the file (optional)")] string? content = null,
         [Description("Maximum number of incoming and outgoing results to show (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_call_hierarchy",
+            format,
             ct => _hierarchyAnalysisService.GetCallHierarchyAsync(filePath, line, character, content, maxResults, ct),
             cancellationToken);
 
@@ -55,12 +59,14 @@ public sealed class HierarchyTools : CSharpToolBase
         [Description("Absolute path to the C# file")] string filePath,
         [Description("0-based line number")] int line,
         [Description("0-based character position")] int character,
-        [Description("Content of the file (optional)")] string? content,
+        [Description("Content of the file (optional)")] string? content = null,
         [Description("Maximum number of supertype and subtype results to show (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_type_hierarchy",
+            format,
             ct => _hierarchyAnalysisService.GetTypeHierarchyAsync(filePath, line, character, content, maxResults, ct),
             cancellationToken);
 }

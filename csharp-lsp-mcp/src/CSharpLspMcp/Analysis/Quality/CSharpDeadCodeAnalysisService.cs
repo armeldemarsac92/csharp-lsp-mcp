@@ -1,5 +1,5 @@
-using System.Text;
 using System.Text.RegularExpressions;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Workspace;
 
 namespace CSharpLspMcp.Analysis.Quality;
@@ -28,7 +28,7 @@ public sealed class CSharpDeadCodeAnalysisService
         _workspaceState = workspaceState;
     }
 
-    public Task<string> FindDeadCodeCandidatesAsync(
+    public Task<DeadCodeAnalysisResponse> FindDeadCodeCandidatesAsync(
         bool includePrivateMembers,
         bool includeInternalTypes,
         bool includeTests,
@@ -37,7 +37,7 @@ public sealed class CSharpDeadCodeAnalysisService
     {
         var workspacePath = _workspaceState.CurrentPath;
         if (string.IsNullOrWhiteSpace(workspacePath))
-            return Task.FromResult("Error: Workspace is not set. Call csharp_set_workspace first.");
+            throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -57,7 +57,16 @@ public sealed class CSharpDeadCodeAnalysisService
         if (candidates.Count == 0)
         {
             return Task.FromResult(
-                "No dead code candidates were found. This heuristic only checks unused private methods, unused private fields, and unreferenced internal types.");
+                new DeadCodeAnalysisResponse(
+                    Summary: "No dead code candidates were found.",
+                    SolutionRoot: workspacePath,
+                    IncludePrivateMembers: includePrivateMembers,
+                    IncludeInternalTypes: includeInternalTypes,
+                    IncludeTests: includeTests,
+                    Note: "Best-effort heuristic. Reflection, source generation, XAML, analyzers, or string-based access may hide real usages.",
+                    TotalCandidates: 0,
+                    Candidates: Array.Empty<DeadCodeCandidateItem>(),
+                    TruncatedCandidates: 0));
         }
 
         var effectiveMaxResults = Math.Max(1, maxResults);
@@ -68,23 +77,25 @@ public sealed class CSharpDeadCodeAnalysisService
             .ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"Solution root: {workspacePath}");
-        sb.AppendLine("Note: best-effort heuristic. Reflection, source generation, XAML, analyzers, or string-based access may hide real usages.");
-        sb.AppendLine();
-        sb.AppendLine($"Candidates ({orderedCandidates.Length}):");
-
-        foreach (var candidate in orderedCandidates.Take(effectiveMaxResults))
-        {
-            sb.AppendLine($"• [{candidate.Kind}] {candidate.RelativePath}:{candidate.LineNumber} {candidate.Name}");
-            sb.AppendLine($"  Evidence: {candidate.Evidence}");
-            sb.AppendLine($"  Source: {candidate.SourceText}");
-        }
-
-        if (orderedCandidates.Length > effectiveMaxResults)
-            sb.AppendLine($"... and {orderedCandidates.Length - effectiveMaxResults} more");
-
-        return Task.FromResult(sb.ToString().TrimEnd());
+        return Task.FromResult(
+            new DeadCodeAnalysisResponse(
+                Summary: $"Found {orderedCandidates.Length} dead-code candidate(s).",
+                SolutionRoot: workspacePath,
+                IncludePrivateMembers: includePrivateMembers,
+                IncludeInternalTypes: includeInternalTypes,
+                IncludeTests: includeTests,
+                Note: "Best-effort heuristic. Reflection, source generation, XAML, analyzers, or string-based access may hide real usages.",
+                TotalCandidates: orderedCandidates.Length,
+                Candidates: orderedCandidates.Take(effectiveMaxResults)
+                    .Select(candidate => new DeadCodeCandidateItem(
+                        candidate.Kind,
+                        candidate.Name,
+                        candidate.RelativePath,
+                        candidate.LineNumber,
+                        candidate.SourceText,
+                        candidate.Evidence))
+                    .ToArray(),
+                TruncatedCandidates: Math.Max(0, orderedCandidates.Length - effectiveMaxResults)));
     }
 
     private static IReadOnlyDictionary<string, string> LoadWorkspaceFiles(string workspacePath, bool includeTests, CancellationToken cancellationToken)
@@ -307,6 +318,25 @@ public sealed class CSharpDeadCodeAnalysisService
     }
 
     private sealed record DeadCodeCandidate(
+        string Kind,
+        string Name,
+        string RelativePath,
+        int LineNumber,
+        string SourceText,
+        string Evidence);
+
+    public sealed record DeadCodeAnalysisResponse(
+        string Summary,
+        string SolutionRoot,
+        bool IncludePrivateMembers,
+        bool IncludeInternalTypes,
+        bool IncludeTests,
+        string Note,
+        int TotalCandidates,
+        DeadCodeCandidateItem[] Candidates,
+        int TruncatedCandidates) : IStructuredToolResult;
+
+    public sealed record DeadCodeCandidateItem(
         string Kind,
         string Name,
         string RelativePath,

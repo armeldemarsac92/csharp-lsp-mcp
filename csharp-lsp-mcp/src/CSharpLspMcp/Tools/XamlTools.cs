@@ -1,5 +1,5 @@
 using System.ComponentModel;
-using System.Text;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Workspace;
 using CSharpLspMcp.Xaml;
 using Microsoft.Extensions.Logging;
@@ -7,11 +7,8 @@ using ModelContextProtocol.Server;
 
 namespace CSharpLspMcp.Tools;
 
-/// <summary>
-/// MCP tools for XAML analysis
-/// </summary>
 [McpServerToolType]
-public class XamlTools
+public sealed class XamlTools : CSharpToolBase
 {
     private readonly ILogger<XamlTools> _logger;
     private readonly XamlAnalyzer _analyzer;
@@ -28,460 +25,541 @@ public class XamlTools
 
     [McpServerTool(Name = "xaml_validate")]
     [Description("Validate a XAML file for errors, warnings, and common issues. Checks type references, property names, resource keys, binding paths, and more.")]
-    public async Task<string> ValidateAsync(
+    public Task<string> ValidateAsync(
         [Description("Path to the XAML file")] string filePath,
-        [Description("XAML content (optional, reads from file if not provided)")] string? content,
-        [Description("Path to project directory for assembly-based validation (optional)")] string? projectPath,
-        CancellationToken cancellationToken)
-    {
-        content ??= await File.ReadAllTextAsync(filePath, cancellationToken);
-        projectPath ??= _workspaceState.CurrentPath;
-
-        var result = await _analyzer.AnalyzeAsync(filePath, content, projectPath, cancellationToken);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"XAML Validation: {Path.GetFileName(filePath)}");
-        sb.AppendLine(new string('=', 50));
-
-        if (result.ParseResult != null)
-        {
-            sb.AppendLine($"\nClass: {result.ParseResult.ClassNamespace}.{result.ParseResult.ClassName}");
-            sb.AppendLine($"Named Elements: {result.ParseResult.NamedElements.Count}");
-            sb.AppendLine($"Resources: {result.ParseResult.Resources.Count}");
-            sb.AppendLine($"Bindings: {result.ParseResult.Bindings.Count}");
-        }
-
-        if (result.Diagnostics.Count == 0)
-        {
-            sb.AppendLine("\nNo issues found!");
-        }
-        else
-        {
-            var errors = result.Diagnostics.Count(d => d.Severity == XamlDiagnosticSeverity.Error);
-            var warnings = result.Diagnostics.Count(d => d.Severity == XamlDiagnosticSeverity.Warning);
-            var info = result.Diagnostics.Count(d => d.Severity == XamlDiagnosticSeverity.Info);
-            var hints = result.Diagnostics.Count(d => d.Severity == XamlDiagnosticSeverity.Hint);
-
-            sb.AppendLine($"\nFound {result.Diagnostics.Count} issue(s): " +
-                          $"{errors} error(s), {warnings} warning(s), {info} info, {hints} hint(s)\n");
-
-            foreach (var diag in result.Diagnostics.OrderBy(d => d.Severity).ThenBy(d => d.Line))
+        [Description("XAML content (optional, reads from file if not provided)")] string? content = null,
+        [Description("Path to project directory for assembly-based validation (optional)")] string? projectPath = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
+            _logger,
+            "xaml_validate",
+            format,
+            async ct =>
             {
-                var icon = diag.Severity switch
-                {
-                    XamlDiagnosticSeverity.Error => "ERROR",
-                    XamlDiagnosticSeverity.Warning => "WARNING",
-                    XamlDiagnosticSeverity.Info => "INFO",
-                    _ => "HINT"
-                };
+                content ??= await File.ReadAllTextAsync(filePath, ct);
+                projectPath ??= _workspaceState.CurrentPath;
 
-                sb.AppendLine($"[{icon}] [{diag.Code}] Line {diag.Line}, Col {diag.Column}:");
-                sb.AppendLine($"   {diag.Message}");
-            }
-        }
+                var result = await _analyzer.AnalyzeAsync(filePath, content, projectPath, ct);
+                var parseResult = result.ParseResult;
+                var errors = result.Diagnostics.Count(d => d.Severity == XamlDiagnosticSeverity.Error);
+                var warnings = result.Diagnostics.Count(d => d.Severity == XamlDiagnosticSeverity.Warning);
 
-        return sb.ToString();
-    }
+                return new XamlValidationResponse(
+                    Summary: result.Diagnostics.Count == 0
+                        ? $"No issues found in {Path.GetFileName(filePath)}."
+                        : $"Found {result.Diagnostics.Count} issue(s) in {Path.GetFileName(filePath)}.",
+                    FilePath: filePath,
+                    ClassName: parseResult?.ClassName,
+                    ClassNamespace: parseResult?.ClassNamespace,
+                    NamedElementCount: parseResult?.NamedElements.Count ?? 0,
+                    ResourceCount: parseResult?.Resources.Count ?? 0,
+                    BindingCount: parseResult?.Bindings.Count ?? 0,
+                    ErrorCount: errors,
+                    WarningCount: warnings,
+                    Diagnostics: result.Diagnostics
+                        .Select(MapDiagnostic)
+                        .ToArray());
+            },
+            cancellationToken);
 
     [McpServerTool(Name = "xaml_bindings")]
     [Description("Extract and analyze all data bindings in a XAML file. Shows binding paths, modes, converters, and potential issues.")]
-    public async Task<string> GetBindingsAsync(
+    public Task<string> GetBindingsAsync(
         [Description("Path to the XAML file")] string filePath,
-        [Description("XAML content (optional)")] string? content,
-        CancellationToken cancellationToken)
-    {
-        content ??= await File.ReadAllTextAsync(filePath, cancellationToken);
-
-        var parseResult = _parser.Parse(content, filePath);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Data Bindings in {Path.GetFileName(filePath)}");
-        sb.AppendLine(new string('=', 50));
-
-        if (parseResult.Bindings.Count == 0)
-        {
-            sb.AppendLine("\nNo data bindings found.");
-            return sb.ToString();
-        }
-
-        sb.AppendLine($"\nFound {parseResult.Bindings.Count} binding(s):\n");
-
-        foreach (var binding in parseResult.Bindings.OrderBy(b => b.Line))
-        {
-            sb.AppendLine($"* Line {binding.Line}: {binding.Path}");
-
-            if (!string.IsNullOrEmpty(binding.Mode))
-                sb.AppendLine($"    Mode: {binding.Mode}");
-            if (!string.IsNullOrEmpty(binding.Converter))
-                sb.AppendLine($"    Converter: {binding.Converter}");
-            if (!string.IsNullOrEmpty(binding.ElementName))
-                sb.AppendLine($"    ElementName: {binding.ElementName}");
-        }
-
-        var uniquePaths = parseResult.Bindings
-            .Where(b => !string.IsNullOrEmpty(b.Path))
-            .Select(b => b.Path.Split('.')[0])
-            .Distinct()
-            .OrderBy(p => p)
-            .ToList();
-
-        if (uniquePaths.Count > 0)
-        {
-            sb.AppendLine($"\nUnique binding root properties ({uniquePaths.Count}):");
-            foreach (var path in uniquePaths)
+        [Description("XAML content (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
+            _logger,
+            "xaml_bindings",
+            format,
+            async ct =>
             {
-                sb.AppendLine($"  - {path}");
-            }
-        }
+                content ??= await File.ReadAllTextAsync(filePath, ct);
+                var parseResult = _parser.Parse(content, filePath);
 
-        return sb.ToString();
-    }
+                var uniquePaths = parseResult.Bindings
+                    .Where(binding => !string.IsNullOrEmpty(binding.Path))
+                    .Select(binding => binding.Path.Split('.')[0])
+                    .Distinct()
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                return new XamlBindingsResponse(
+                    Summary: parseResult.Bindings.Count == 0
+                        ? $"No data bindings found in {Path.GetFileName(filePath)}."
+                        : $"Found {parseResult.Bindings.Count} binding(s) in {Path.GetFileName(filePath)}.",
+                    FilePath: filePath,
+                    TotalBindings: parseResult.Bindings.Count,
+                    Bindings: parseResult.Bindings
+                        .OrderBy(binding => binding.Line)
+                        .Select(binding => new XamlBindingItem(
+                            binding.Path,
+                            binding.Line,
+                            binding.Column,
+                            binding.Mode,
+                            binding.Converter,
+                            binding.ElementName,
+                            binding.Source,
+                            binding.RelativeSource))
+                        .ToArray(),
+                    UniqueRootProperties: uniquePaths);
+            },
+            cancellationToken);
 
     [McpServerTool(Name = "xaml_resources")]
     [Description("List all resources defined in a XAML file and check for unused or missing resource references.")]
-    public async Task<string> GetResourcesAsync(
+    public Task<string> GetResourcesAsync(
         [Description("Path to the XAML file")] string filePath,
-        [Description("XAML content (optional)")] string? content,
-        CancellationToken cancellationToken)
-    {
-        content ??= await File.ReadAllTextAsync(filePath, cancellationToken);
-
-        var parseResult = _parser.Parse(content, filePath);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Resources in {Path.GetFileName(filePath)}");
-        sb.AppendLine(new string('=', 50));
-
-        sb.AppendLine($"\nDefined Resources ({parseResult.Resources.Count}):");
-        if (parseResult.Resources.Count == 0)
-        {
-            sb.AppendLine("  (none)");
-        }
-        else
-        {
-            foreach (var resource in parseResult.Resources.OrderBy(r => r.Key))
+        [Description("XAML content (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
+            _logger,
+            "xaml_resources",
+            format,
+            async ct =>
             {
-                var extra = resource.IsStyle && resource.TargetType != null
-                    ? $" (TargetType: {resource.TargetType})"
-                    : "";
-                sb.AppendLine($"  * {resource.Key} ({resource.Type}){extra} - Line {resource.Line}");
-            }
-        }
+                content ??= await File.ReadAllTextAsync(filePath, ct);
+                var parseResult = _parser.Parse(content, filePath);
 
-        var staticRefs = parseResult.ResourceReferences.Where(r => r.IsStatic).ToList();
-        var dynamicRefs = parseResult.ResourceReferences.Where(r => !r.IsStatic).ToList();
+                var staticRefs = parseResult.ResourceReferences.Where(reference => reference.IsStatic).ToArray();
+                var dynamicRefs = parseResult.ResourceReferences.Where(reference => !reference.IsStatic).ToArray();
+                var usedKeys = parseResult.ResourceReferences.Select(reference => reference.Key).ToHashSet();
+                var unusedResources = parseResult.Resources
+                    .Where(resource => !usedKeys.Contains(resource.Key) && !resource.IsStyle)
+                    .ToArray();
 
-        sb.AppendLine($"\nStaticResource References ({staticRefs.Count}):");
-        if (staticRefs.Count == 0)
-        {
-            sb.AppendLine("  (none)");
-        }
-        else
-        {
-            foreach (var refGroup in staticRefs.GroupBy(r => r.Key).OrderBy(g => g.Key))
-            {
-                var defined = parseResult.Resources.Any(r => r.Key == refGroup.Key);
-                var status = defined ? "(found)" : "(not in file)";
-                sb.AppendLine($"  * {refGroup.Key} ({refGroup.Count()} usage(s)) {status}");
-            }
-        }
-
-        sb.AppendLine($"\nDynamicResource References ({dynamicRefs.Count}):");
-        if (dynamicRefs.Count == 0)
-        {
-            sb.AppendLine("  (none)");
-        }
-        else
-        {
-            foreach (var refGroup in dynamicRefs.GroupBy(r => r.Key).OrderBy(g => g.Key))
-            {
-                sb.AppendLine($"  * {refGroup.Key} ({refGroup.Count()} usage(s))");
-            }
-        }
-
-        var usedKeys = parseResult.ResourceReferences.Select(r => r.Key).ToHashSet();
-        var unusedResources = parseResult.Resources
-            .Where(r => !usedKeys.Contains(r.Key) && !r.IsStyle)
-            .ToList();
-
-        if (unusedResources.Count > 0)
-        {
-            sb.AppendLine($"\nPotentially Unused Resources ({unusedResources.Count}):");
-            foreach (var resource in unusedResources)
-            {
-                sb.AppendLine($"  * {resource.Key} ({resource.Type})");
-            }
-        }
-
-        return sb.ToString();
-    }
+                return new XamlResourcesResponse(
+                    Summary: $"Found {parseResult.Resources.Count} resource definition(s) and {parseResult.ResourceReferences.Count} resource reference(s).",
+                    FilePath: filePath,
+                    Resources: parseResult.Resources
+                        .OrderBy(resource => resource.Key, StringComparer.OrdinalIgnoreCase)
+                        .Select(resource => new XamlResourceItem(
+                            resource.Key,
+                            resource.Type,
+                            resource.Line,
+                            resource.Column,
+                            resource.IsStyle,
+                            resource.TargetType))
+                        .ToArray(),
+                    StaticReferences: staticRefs.Select(MapResourceReference).ToArray(),
+                    DynamicReferences: dynamicRefs.Select(MapResourceReference).ToArray(),
+                    UnusedResources: unusedResources
+                        .Select(resource => new XamlResourceItem(
+                            resource.Key,
+                            resource.Type,
+                            resource.Line,
+                            resource.Column,
+                            resource.IsStyle,
+                            resource.TargetType))
+                        .ToArray());
+            },
+            cancellationToken);
 
     [McpServerTool(Name = "xaml_names")]
     [Description("List all x:Name declarations in a XAML file. Useful for finding named elements and checking for duplicates.")]
-    public async Task<string> GetNamesAsync(
+    public Task<string> GetNamesAsync(
         [Description("Path to the XAML file")] string filePath,
-        [Description("XAML content (optional)")] string? content,
-        CancellationToken cancellationToken)
-    {
-        content ??= await File.ReadAllTextAsync(filePath, cancellationToken);
-
-        var parseResult = _parser.Parse(content, filePath);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Named Elements in {Path.GetFileName(filePath)}");
-        sb.AppendLine(new string('=', 50));
-
-        if (parseResult.NamedElements.Count == 0)
-        {
-            sb.AppendLine("\nNo named elements (x:Name) found.");
-            return sb.ToString();
-        }
-
-        sb.AppendLine($"\nFound {parseResult.NamedElements.Count} named element(s):\n");
-
-        var byType = parseResult.NamedElements
-            .GroupBy(n => n.Type)
-            .OrderBy(g => g.Key);
-
-        foreach (var group in byType)
-        {
-            sb.AppendLine($"{group.Key}:");
-            foreach (var element in group.OrderBy(e => e.Name))
+        [Description("XAML content (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
+            _logger,
+            "xaml_names",
+            format,
+            async ct =>
             {
-                sb.AppendLine($"  * {element.Name} (line {element.Line})");
-            }
-        }
+                content ??= await File.ReadAllTextAsync(filePath, ct);
+                var parseResult = _parser.Parse(content, filePath);
 
-        var duplicates = parseResult.NamedElements
-            .GroupBy(n => n.Name)
-            .Where(g => g.Count() > 1)
-            .ToList();
+                var duplicates = parseResult.NamedElements
+                    .GroupBy(element => element.Name)
+                    .Where(group => group.Count() > 1)
+                    .Select(group => new XamlDuplicateNameItem(
+                        group.Key,
+                        group.Select(item => item.Line).OrderBy(line => line).ToArray()))
+                    .ToArray();
 
-        if (duplicates.Count > 0)
-        {
-            sb.AppendLine("\nDuplicate Names Found:");
-            foreach (var dup in duplicates)
-            {
-                sb.AppendLine($"  * '{dup.Key}' appears {dup.Count()} times at lines: " +
-                              string.Join(", ", dup.Select(d => d.Line)));
-            }
-        }
-
-        return sb.ToString();
-    }
+                return new XamlNamesResponse(
+                    Summary: parseResult.NamedElements.Count == 0
+                        ? $"No named elements found in {Path.GetFileName(filePath)}."
+                        : $"Found {parseResult.NamedElements.Count} named element(s) in {Path.GetFileName(filePath)}.",
+                    FilePath: filePath,
+                    NamedElements: parseResult.NamedElements
+                        .OrderBy(element => element.Type, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(element => element.Name, StringComparer.OrdinalIgnoreCase)
+                        .Select(element => new XamlNamedElementItem(
+                            element.Name,
+                            element.Type,
+                            element.Line,
+                            element.Column))
+                        .ToArray(),
+                    DuplicateNames: duplicates);
+            },
+            cancellationToken);
 
     [McpServerTool(Name = "xaml_structure")]
     [Description("Show the element tree structure of a XAML file. Displays hierarchy of controls and their types.")]
-    public async Task<string> GetStructureAsync(
+    public Task<string> GetStructureAsync(
         [Description("Path to the XAML file")] string filePath,
-        [Description("XAML content (optional)")] string? content,
+        [Description("XAML content (optional)")] string? content = null,
         [Description("Maximum depth to display (default: 10)")] int maxDepth = 10,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-    {
-        content ??= await File.ReadAllTextAsync(filePath, cancellationToken);
-
-        var parseResult = _parser.Parse(content, filePath);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Element Structure: {Path.GetFileName(filePath)}");
-        sb.AppendLine(new string('=', 50));
-
-        if (parseResult.Root == null)
-        {
-            sb.AppendLine("\nCould not parse XAML structure.");
-            if (parseResult.ParseErrors.Count > 0)
+        => ExecuteStructuredToolAsync(
+            _logger,
+            "xaml_structure",
+            format,
+            async ct =>
             {
-                sb.AppendLine("Parse errors:");
-                foreach (var error in parseResult.ParseErrors)
-                {
-                    sb.AppendLine($"  * Line {error.Line}: {error.Message}");
-                }
-            }
-            return sb.ToString();
-        }
+                content ??= await File.ReadAllTextAsync(filePath, ct);
+                var parseResult = _parser.Parse(content, filePath);
 
-        sb.AppendLine();
-        PrintElementTree(parseResult.Root, sb, 0, maxDepth);
-
-        return sb.ToString();
-    }
+                return new XamlStructureResponse(
+                    Summary: parseResult.Root == null
+                        ? $"Could not parse XAML structure for {Path.GetFileName(filePath)}."
+                        : $"Parsed XAML structure for {Path.GetFileName(filePath)}.",
+                    FilePath: filePath,
+                    Root: parseResult.Root == null ? null : MapElement(parseResult.Root, 0, Math.Max(1, maxDepth)),
+                    ParseErrors: parseResult.ParseErrors.Select(MapDiagnostic).ToArray());
+            },
+            cancellationToken);
 
     [McpServerTool(Name = "xaml_find_binding_errors")]
     [Description("Find potential binding errors in XAML. Checks for ElementName references to non-existent names, converter references, and suspicious binding patterns.")]
-    public async Task<string> FindBindingErrorsAsync(
+    public Task<string> FindBindingErrorsAsync(
         [Description("Path to the XAML file")] string filePath,
-        [Description("XAML content (optional)")] string? content,
-        CancellationToken cancellationToken)
-    {
-        content ??= await File.ReadAllTextAsync(filePath, cancellationToken);
-
-        var parseResult = _parser.Parse(content, filePath);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Binding Error Analysis: {Path.GetFileName(filePath)}");
-        sb.AppendLine(new string('=', 50));
-
-        var issues = new List<string>();
-
-        var namedElements = parseResult.NamedElements.Select(n => n.Name).ToHashSet();
-        foreach (var binding in parseResult.Bindings.Where(b => !string.IsNullOrEmpty(b.ElementName)))
-        {
-            if (!namedElements.Contains(binding.ElementName!))
+        [Description("XAML content (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
+            _logger,
+            "xaml_find_binding_errors",
+            format,
+            async ct =>
             {
-                issues.Add($"[ERROR] Line {binding.Line}: ElementName=\"{binding.ElementName}\" references non-existent element");
-            }
-        }
+                content ??= await File.ReadAllTextAsync(filePath, ct);
+                var parseResult = _parser.Parse(content, filePath);
 
-        var resourceKeys = parseResult.Resources.Select(r => r.Key).ToHashSet();
-        foreach (var binding in parseResult.Bindings.Where(b => !string.IsNullOrEmpty(b.Converter)))
-        {
-            if (!resourceKeys.Contains(binding.Converter!))
-            {
-                issues.Add($"[WARNING] Line {binding.Line}: Converter=\"{binding.Converter}\" not found in file resources");
-            }
-        }
+                var issues = new List<XamlBindingIssueItem>();
+                var namedElements = parseResult.NamedElements.Select(element => element.Name).ToHashSet();
+                foreach (var binding in parseResult.Bindings.Where(binding => !string.IsNullOrEmpty(binding.ElementName)))
+                {
+                    if (!namedElements.Contains(binding.ElementName!))
+                    {
+                        issues.Add(new XamlBindingIssueItem(
+                            "ERROR",
+                            binding.Line,
+                            binding.Column,
+                            $"ElementName='{binding.ElementName}' references non-existent element"));
+                    }
+                }
 
-        foreach (var binding in parseResult.Bindings)
-        {
-            if (binding.Path.Contains(".."))
-            {
-                issues.Add($"[WARNING] Line {binding.Line}: Suspicious path with '..': {binding.Path}");
-            }
+                var resourceKeys = parseResult.Resources.Select(resource => resource.Key).ToHashSet();
+                foreach (var binding in parseResult.Bindings.Where(binding => !string.IsNullOrEmpty(binding.Converter)))
+                {
+                    if (!resourceKeys.Contains(binding.Converter!))
+                    {
+                        issues.Add(new XamlBindingIssueItem(
+                            "WARNING",
+                            binding.Line,
+                            binding.Column,
+                            $"Converter='{binding.Converter}' not found in file resources"));
+                    }
+                }
 
-            if (binding.Path.EndsWith("."))
-            {
-                issues.Add($"[ERROR] Line {binding.Line}: Path ends with '.': {binding.Path}");
-            }
+                foreach (var binding in parseResult.Bindings)
+                {
+                    if (binding.Path.Contains("..", StringComparison.Ordinal))
+                    {
+                        issues.Add(new XamlBindingIssueItem(
+                            "WARNING",
+                            binding.Line,
+                            binding.Column,
+                            $"Suspicious path with '..': {binding.Path}"));
+                    }
 
-            if (binding.Path.StartsWith("[") && !binding.Path.Contains("]"))
-            {
-                issues.Add($"[ERROR] Line {binding.Line}: Unclosed indexer in path: {binding.Path}");
-            }
-        }
+                    if (binding.Path.EndsWith(".", StringComparison.Ordinal))
+                    {
+                        issues.Add(new XamlBindingIssueItem(
+                            "ERROR",
+                            binding.Line,
+                            binding.Column,
+                            $"Path ends with '.': {binding.Path}"));
+                    }
 
-        foreach (var binding in parseResult.Bindings)
-        {
-            if (string.IsNullOrEmpty(binding.Path) &&
-                string.IsNullOrEmpty(binding.ElementName) &&
-                !string.IsNullOrEmpty(binding.Mode))
-            {
-                issues.Add($"[WARNING] Line {binding.Line}: Binding with Mode but no Path specified");
-            }
-        }
+                    if (binding.Path.StartsWith("[", StringComparison.Ordinal) && !binding.Path.Contains("]", StringComparison.Ordinal))
+                    {
+                        issues.Add(new XamlBindingIssueItem(
+                            "ERROR",
+                            binding.Line,
+                            binding.Column,
+                            $"Unclosed indexer in path: {binding.Path}"));
+                    }
 
-        if (issues.Count == 0)
-        {
-            sb.AppendLine("\nNo binding errors detected!");
-        }
-        else
-        {
-            sb.AppendLine($"\nFound {issues.Count} potential issue(s):\n");
-            foreach (var issue in issues)
-            {
-                sb.AppendLine(issue);
-            }
-        }
+                    if (string.IsNullOrEmpty(binding.Path) &&
+                        string.IsNullOrEmpty(binding.ElementName) &&
+                        !string.IsNullOrEmpty(binding.Mode))
+                    {
+                        issues.Add(new XamlBindingIssueItem(
+                            "WARNING",
+                            binding.Line,
+                            binding.Column,
+                            "Binding with Mode but no Path specified"));
+                    }
+                }
 
-        return sb.ToString();
-    }
+                return new XamlBindingErrorsResponse(
+                    Summary: issues.Count == 0
+                        ? $"No binding issues detected in {Path.GetFileName(filePath)}."
+                        : $"Found {issues.Count} potential binding issue(s) in {Path.GetFileName(filePath)}.",
+                    FilePath: filePath,
+                    Issues: issues.OrderBy(issue => issue.Line).ThenBy(issue => issue.Column).ToArray());
+            },
+            cancellationToken);
 
     [McpServerTool(Name = "xaml_extract_viewmodel")]
     [Description("Extract the expected ViewModel interface from XAML bindings. Generates a C# interface with properties needed by the XAML bindings.")]
-    public async Task<string> ExtractViewModelAsync(
+    public Task<string> ExtractViewModelAsync(
         [Description("Path to the XAML file")] string filePath,
-        [Description("XAML content (optional)")] string? content,
+        [Description("XAML content (optional)")] string? content = null,
         [Description("Name for generated interface (default: IViewModel)")] string interfaceName = "IViewModel",
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-    {
-        content ??= await File.ReadAllTextAsync(filePath, cancellationToken);
-
-        var parseResult = _parser.Parse(content, filePath);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"// Generated ViewModel interface from {Path.GetFileName(filePath)}");
-        sb.AppendLine($"// Bindings found: {parseResult.Bindings.Count}");
-        sb.AppendLine();
-
-        var properties = parseResult.Bindings
-            .Where(b => !string.IsNullOrEmpty(b.Path))
-            .Select(b => b.Path.Split('.')[0])
-            .Where(p => !p.StartsWith("[") && !p.StartsWith("("))
-            .Distinct()
-            .OrderBy(p => p)
-            .ToList();
-
-        var propertyTypes = new Dictionary<string, string>();
-        foreach (var binding in parseResult.Bindings)
-        {
-            if (string.IsNullOrEmpty(binding.Path)) continue;
-
-            var rootProp = binding.Path.Split('.')[0];
-
-            if (binding.Path.Contains("Command") || rootProp.EndsWith("Command"))
+        => ExecuteStructuredToolAsync(
+            _logger,
+            "xaml_extract_viewmodel",
+            format,
+            async ct =>
             {
-                propertyTypes[rootProp] = "ICommand";
-            }
-            else if (binding.Path.Contains("Items") || rootProp.EndsWith("Items") ||
-                     rootProp.EndsWith("Collection") || rootProp.EndsWith("List"))
-            {
-                propertyTypes[rootProp] = "IEnumerable";
-            }
-            else if (rootProp.StartsWith("Is") || rootProp.StartsWith("Has") ||
-                     rootProp.StartsWith("Can") || rootProp.EndsWith("Enabled") ||
-                     rootProp.EndsWith("Visible"))
-            {
-                propertyTypes[rootProp] = "bool";
-            }
-            else if (rootProp.EndsWith("Count") || rootProp.EndsWith("Index") ||
-                     rootProp.EndsWith("Number"))
-            {
-                propertyTypes[rootProp] = "int";
-            }
-            else if (rootProp.EndsWith("Date") || rootProp.EndsWith("Time"))
-            {
-                propertyTypes[rootProp] = "DateTime";
-            }
-            else if (!propertyTypes.ContainsKey(rootProp))
-            {
-                propertyTypes[rootProp] = "object";
-            }
-        }
+                content ??= await File.ReadAllTextAsync(filePath, ct);
+                var parseResult = _parser.Parse(content, filePath);
 
-        sb.AppendLine($"public interface {interfaceName}");
-        sb.AppendLine("{");
+                var properties = parseResult.Bindings
+                    .Where(binding => !string.IsNullOrEmpty(binding.Path))
+                    .Select(binding => binding.Path.Split('.')[0])
+                    .Where(property => !property.StartsWith("[", StringComparison.Ordinal) && !property.StartsWith("(", StringComparison.Ordinal))
+                    .Distinct()
+                    .OrderBy(property => property, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
-        foreach (var prop in properties)
-        {
-            var propType = propertyTypes.GetValueOrDefault(prop, "object");
-            sb.AppendLine($"    {propType} {prop} {{ get; }}");
-        }
+                var propertyTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var binding in parseResult.Bindings)
+                {
+                    if (string.IsNullOrEmpty(binding.Path))
+                        continue;
 
-        sb.AppendLine("}");
+                    var rootProperty = binding.Path.Split('.')[0];
+                    if (binding.Path.Contains("Command", StringComparison.Ordinal) || rootProperty.EndsWith("Command", StringComparison.Ordinal))
+                        propertyTypes[rootProperty] = "ICommand";
+                    else if (binding.Path.Contains("Items", StringComparison.Ordinal) || rootProperty.EndsWith("Items", StringComparison.Ordinal) ||
+                             rootProperty.EndsWith("Collection", StringComparison.Ordinal) || rootProperty.EndsWith("List", StringComparison.Ordinal))
+                        propertyTypes[rootProperty] = "IEnumerable";
+                    else if (rootProperty.StartsWith("Is", StringComparison.Ordinal) || rootProperty.StartsWith("Has", StringComparison.Ordinal) ||
+                             rootProperty.StartsWith("Can", StringComparison.Ordinal) || rootProperty.EndsWith("Enabled", StringComparison.Ordinal) ||
+                             rootProperty.EndsWith("Visible", StringComparison.Ordinal))
+                        propertyTypes[rootProperty] = "bool";
+                    else if (rootProperty.EndsWith("Count", StringComparison.Ordinal) || rootProperty.EndsWith("Index", StringComparison.Ordinal) ||
+                             rootProperty.EndsWith("Number", StringComparison.Ordinal))
+                        propertyTypes[rootProperty] = "int";
+                    else if (rootProperty.EndsWith("Date", StringComparison.Ordinal) || rootProperty.EndsWith("Time", StringComparison.Ordinal))
+                        propertyTypes[rootProperty] = "DateTime";
+                    else if (!propertyTypes.ContainsKey(rootProperty))
+                        propertyTypes[rootProperty] = "object";
+                }
 
-        sb.AppendLine();
-        sb.AppendLine("// Note: Types are inferred from naming conventions.");
-        sb.AppendLine("// Please review and adjust as needed.");
+                var propertyItems = properties
+                    .Select(property => new XamlViewModelPropertyItem(property, propertyTypes.GetValueOrDefault(property, "object")))
+                    .ToArray();
 
-        return sb.ToString();
-    }
+                var generatedCode = BuildGeneratedInterface(filePath, interfaceName, parseResult.Bindings.Count, propertyItems);
 
-    private void PrintElementTree(XamlElement element, StringBuilder sb, int depth, int maxDepth)
+                return new XamlExtractViewModelResponse(
+                    Summary: $"Generated {interfaceName} with {propertyItems.Length} inferred propert{(propertyItems.Length == 1 ? "y" : "ies")}.",
+                    FilePath: filePath,
+                    InterfaceName: interfaceName,
+                    BindingCount: parseResult.Bindings.Count,
+                    Properties: propertyItems,
+                    GeneratedCode: generatedCode,
+                    Notes:
+                    [
+                        "Types are inferred from naming conventions.",
+                        "Review and adjust the generated interface as needed."
+                    ]);
+            },
+            cancellationToken);
+
+    private static XamlDiagnosticItem MapDiagnostic(XamlDiagnostic diagnostic)
+        => new(
+            diagnostic.Severity.ToString().ToUpperInvariant(),
+            diagnostic.Line,
+            diagnostic.Column,
+            diagnostic.Message,
+            diagnostic.Code,
+            diagnostic.Source);
+
+    private static XamlResourceReferenceItem MapResourceReference(XamlResourceReference reference)
+        => new(reference.Key, reference.IsStatic, reference.Line, reference.Column);
+
+    private static XamlElementNode MapElement(XamlElement element, int depth, int maxDepth)
     {
         if (depth >= maxDepth)
         {
-            sb.AppendLine($"{new string(' ', depth * 2)}...");
-            return;
+            return new XamlElementNode(
+                element.Name,
+                element.Line,
+                element.Column,
+                element.Attributes.FirstOrDefault(attribute => attribute.Name is "x:Name" or "Name")?.Value,
+                Array.Empty<XamlElementNode>(),
+                true);
         }
 
-        var indent = new string(' ', depth * 2);
-        var name = element.Attributes.FirstOrDefault(a => a.Name == "x:Name" || a.Name == "Name")?.Value;
-        var nameStr = name != null ? $" (x:Name=\"{name}\")" : "";
-
-        sb.AppendLine($"{indent}* {element.Name}{nameStr}");
-
-        foreach (var child in element.Children.Where(c => !c.Name.Contains(".")))
-        {
-            PrintElementTree(child, sb, depth + 1, maxDepth);
-        }
+        return new XamlElementNode(
+            element.Name,
+            element.Line,
+            element.Column,
+            element.Attributes.FirstOrDefault(attribute => attribute.Name is "x:Name" or "Name")?.Value,
+            element.Children
+                .Where(child => !child.Name.Contains(".", StringComparison.Ordinal))
+                .Select(child => MapElement(child, depth + 1, maxDepth))
+                .ToArray(),
+            false);
     }
+
+    private static string BuildGeneratedInterface(
+        string filePath,
+        string interfaceName,
+        int bindingCount,
+        IReadOnlyCollection<XamlViewModelPropertyItem> properties)
+    {
+        var lines = new List<string>
+        {
+            $"// Generated ViewModel interface from {Path.GetFileName(filePath)}",
+            $"// Bindings found: {bindingCount}",
+            string.Empty,
+            $"public interface {interfaceName}",
+            "{"
+        };
+
+        foreach (var property in properties)
+            lines.Add($"    {property.Type} {property.Name} {{ get; }}");
+
+        lines.Add("}");
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    public sealed record XamlValidationResponse(
+        string Summary,
+        string FilePath,
+        string? ClassName,
+        string? ClassNamespace,
+        int NamedElementCount,
+        int ResourceCount,
+        int BindingCount,
+        int ErrorCount,
+        int WarningCount,
+        XamlDiagnosticItem[] Diagnostics) : IStructuredToolResult;
+
+    public sealed record XamlBindingsResponse(
+        string Summary,
+        string FilePath,
+        int TotalBindings,
+        XamlBindingItem[] Bindings,
+        string[] UniqueRootProperties) : IStructuredToolResult;
+
+    public sealed record XamlResourcesResponse(
+        string Summary,
+        string FilePath,
+        XamlResourceItem[] Resources,
+        XamlResourceReferenceItem[] StaticReferences,
+        XamlResourceReferenceItem[] DynamicReferences,
+        XamlResourceItem[] UnusedResources) : IStructuredToolResult;
+
+    public sealed record XamlNamesResponse(
+        string Summary,
+        string FilePath,
+        XamlNamedElementItem[] NamedElements,
+        XamlDuplicateNameItem[] DuplicateNames) : IStructuredToolResult;
+
+    public sealed record XamlStructureResponse(
+        string Summary,
+        string FilePath,
+        XamlElementNode? Root,
+        XamlDiagnosticItem[] ParseErrors) : IStructuredToolResult;
+
+    public sealed record XamlBindingErrorsResponse(
+        string Summary,
+        string FilePath,
+        XamlBindingIssueItem[] Issues) : IStructuredToolResult;
+
+    public sealed record XamlExtractViewModelResponse(
+        string Summary,
+        string FilePath,
+        string InterfaceName,
+        int BindingCount,
+        XamlViewModelPropertyItem[] Properties,
+        string GeneratedCode,
+        string[] Notes) : IStructuredToolResult;
+
+    public sealed record XamlDiagnosticItem(
+        string Severity,
+        int Line,
+        int Column,
+        string Message,
+        string? Code,
+        string? Source);
+
+    public sealed record XamlBindingItem(
+        string Path,
+        int Line,
+        int Column,
+        string? Mode,
+        string? Converter,
+        string? ElementName,
+        string? Source,
+        string? RelativeSource);
+
+    public sealed record XamlResourceItem(
+        string Key,
+        string Type,
+        int Line,
+        int Column,
+        bool IsStyle,
+        string? TargetType);
+
+    public sealed record XamlResourceReferenceItem(
+        string Key,
+        bool IsStatic,
+        int Line,
+        int Column);
+
+    public sealed record XamlNamedElementItem(
+        string Name,
+        string Type,
+        int Line,
+        int Column);
+
+    public sealed record XamlDuplicateNameItem(
+        string Name,
+        int[] Lines);
+
+    public sealed record XamlElementNode(
+        string Name,
+        int Line,
+        int Column,
+        string? XName,
+        XamlElementNode[] Children,
+        bool IsTruncated);
+
+    public sealed record XamlBindingIssueItem(
+        string Severity,
+        int Line,
+        int Column,
+        string Message);
+
+    public sealed record XamlViewModelPropertyItem(
+        string Name,
+        string Type);
 }

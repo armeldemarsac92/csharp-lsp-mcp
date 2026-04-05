@@ -93,15 +93,16 @@ public sealed class CSharpEntrypointAnalysisServiceTests
 
             var summary = await service.FindEntrypointsAsync(true, true, true, 20, CancellationToken.None);
 
-            Assert.Contains("Host Projects (2):", summary);
-            Assert.Contains("Sample.Api [web]", summary);
-            Assert.Contains("Program: src/Sample.Api/Program.cs", summary);
-            Assert.Contains("Middleware: UseAuthentication, UseAuthorization", summary);
-            Assert.Contains("Endpoint composition: app.MapApiEndpoints()", summary);
-            Assert.Contains("MapGet(\"/health\"", summary);
-            Assert.Contains("AddHostedService<RuntimeWorker>()", summary);
-            Assert.Contains("RuntimeWorker : BackgroundService", summary);
-            Assert.Contains("Sample.Worker [worker]", summary);
+            Assert.Equal(workspacePath, summary.SolutionRoot);
+            Assert.Equal(2, summary.HostProjects.Length);
+            Assert.Contains(summary.HostProjects, project => project.Name == "Sample.Api" && project.ProjectType == "web");
+            Assert.Contains(summary.HostProjects, project => project.ProgramPath == "src/Sample.Api/Program.cs");
+            Assert.Contains(summary.HostProjects, project => project.MiddlewareCalls.Contains("UseAuthentication"));
+            Assert.Contains(summary.HostProjects, project => project.EndpointCompositionCalls.Contains("app.MapApiEndpoints()"));
+            Assert.Contains(summary.AspNetRoutes, route => route.Text.Contains("MapGet(\"/health\"", StringComparison.Ordinal));
+            Assert.Contains(summary.HostedServiceRegistrations, route => route.Text.Contains("AddHostedService<RuntimeWorker>()", StringComparison.Ordinal));
+            Assert.Contains(summary.BackgroundServiceImplementations, route => route.Text.Contains("RuntimeWorker : BackgroundService", StringComparison.Ordinal));
+            Assert.Contains(summary.HostProjects, project => project.Name == "Sample.Worker" && project.ProjectType == "worker");
         }
         finally
         {

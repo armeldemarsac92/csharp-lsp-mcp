@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Lsp;
 using CSharpLspMcp.Workspace;
 
@@ -18,7 +19,7 @@ public sealed class CSharpDocumentAnalysisService
         _workspaceSession = workspaceSession;
     }
 
-    public async Task<string> GetDiagnosticsAsync(string filePath, string? content, CancellationToken cancellationToken)
+    public async Task<DiagnosticsResponse> GetDiagnosticsAsync(string filePath, string? content, CancellationToken cancellationToken)
     {
         var absolutePath = _workspaceSession.GetAbsolutePath(filePath);
         await _workspaceSession.EnsureDocumentOpenAsync(absolutePath, content, cancellationToken);
@@ -29,33 +30,30 @@ public sealed class CSharpDocumentAnalysisService
             cancellationToken);
 
         if (diagnostics == null || diagnostics.Diagnostics.Length == 0)
-            return "No diagnostics found.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {diagnostics.Diagnostics.Length} diagnostic(s):\n");
-
-        foreach (var diag in diagnostics.Diagnostics.OrderBy(d => d.Range.Start.Line))
         {
-            var severity = diag.Severity switch
-            {
-                DiagnosticSeverity.Error => "ERROR",
-                DiagnosticSeverity.Warning => "WARNING",
-                DiagnosticSeverity.Information => "INFO",
-                DiagnosticSeverity.Hint => "HINT",
-                _ => "UNKNOWN"
-            };
-
-            sb.AppendLine($"[{severity}] Line {diag.Range.Start.Line + 1}, Col {diag.Range.Start.Character + 1}:");
-            sb.AppendLine($"  {diag.Message}");
-            if (diag.Code != null)
-                sb.AppendLine($"  Code: {diag.Code}");
-            sb.AppendLine();
+            return new DiagnosticsResponse(
+                Summary: "No diagnostics found.",
+                FilePath: FormatPath(absolutePath),
+                TotalDiagnostics: 0,
+                Diagnostics: Array.Empty<DocumentDiagnosticItem>());
         }
 
-        return sb.ToString();
+        return new DiagnosticsResponse(
+            Summary: $"Found {diagnostics.Diagnostics.Length} diagnostic(s).",
+            FilePath: FormatPath(absolutePath),
+            TotalDiagnostics: diagnostics.Diagnostics.Length,
+            Diagnostics: diagnostics.Diagnostics
+                .OrderBy(d => d.Range.Start.Line)
+                .Select(diag => new DocumentDiagnosticItem(
+                    FormatSeverity(diag.Severity),
+                    diag.Range.Start.Line + 1,
+                    diag.Range.Start.Character + 1,
+                    diag.Message,
+                    diag.Code?.ToString()))
+                .ToArray());
     }
 
-    public async Task<string> GetHoverAsync(
+    public async Task<HoverResponse> GetHoverAsync(
         string filePath,
         int line,
         int character,
@@ -67,12 +65,24 @@ public sealed class CSharpDocumentAnalysisService
 
         var hover = await _lspClient.GetHoverAsync(absolutePath, line, character, cancellationToken);
         if (hover == null)
-            return "No hover information available at this position.";
+        {
+            return new HoverResponse(
+                Summary: "No hover information available at this position.",
+                FilePath: FormatPath(absolutePath),
+                Line: line + 1,
+                Character: character + 1,
+                Content: null);
+        }
 
-        return FormatHoverContent(hover.Contents);
+        return new HoverResponse(
+            Summary: "Hover information available.",
+            FilePath: FormatPath(absolutePath),
+            Line: line + 1,
+            Character: character + 1,
+            Content: FormatHoverContent(hover.Contents));
     }
 
-    public async Task<string> GetCompletionsAsync(
+    public async Task<CompletionsResponse> GetCompletionsAsync(
         string filePath,
         int line,
         int character,
@@ -85,26 +95,34 @@ public sealed class CSharpDocumentAnalysisService
 
         var completions = await _lspClient.GetCompletionsAsync(absolutePath, line, character, cancellationToken);
         if (completions == null || completions.Length == 0)
-            return "No completions available.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {completions.Length} completion(s):\n");
-
-        foreach (var item in completions.Take(maxResults))
         {
-            var kind = item.Kind?.ToString() ?? "Unknown";
-            sb.AppendLine($"• {item.Label} ({kind})");
-            if (!string.IsNullOrEmpty(item.Detail))
-                sb.AppendLine($"  {item.Detail}");
+            return new CompletionsResponse(
+                Summary: "No completions available.",
+                FilePath: FormatPath(absolutePath),
+                Line: line + 1,
+                Character: character + 1,
+                TotalCompletions: 0,
+                Items: Array.Empty<CompletionItem>(),
+                TruncatedCompletions: 0);
         }
 
-        if (completions.Length > maxResults)
-            sb.AppendLine($"\n... and {completions.Length - maxResults} more");
-
-        return sb.ToString();
+        var effectiveMaxResults = Math.Max(1, maxResults);
+        return new CompletionsResponse(
+            Summary: $"Found {completions.Length} completion(s).",
+            FilePath: FormatPath(absolutePath),
+            Line: line + 1,
+            Character: character + 1,
+            TotalCompletions: completions.Length,
+            Items: completions.Take(effectiveMaxResults)
+                .Select(item => new CompletionItem(
+                    item.Label,
+                    item.Kind?.ToString() ?? "Unknown",
+                    item.Detail))
+                .ToArray(),
+            TruncatedCompletions: Math.Max(0, completions.Length - effectiveMaxResults));
     }
 
-    public async Task<string> GetDefinitionAsync(
+    public async Task<DefinitionResponse> GetDefinitionAsync(
         string filePath,
         int line,
         int character,
@@ -116,22 +134,24 @@ public sealed class CSharpDocumentAnalysisService
 
         var locations = await _lspClient.GetDefinitionAsync(absolutePath, line, character, cancellationToken);
         if (locations == null || locations.Length == 0)
-            return "No definition found.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {locations.Length} definition(s):\n");
-
-        foreach (var loc in locations)
         {
-            var path = new Uri(loc.Uri).LocalPath;
-            sb.AppendLine($"• {path}");
-            sb.AppendLine($"  Line {loc.Range.Start.Line + 1}, Col {loc.Range.Start.Character + 1}");
+            return new DefinitionResponse(
+                Summary: "No definition found.",
+                FilePath: FormatPath(absolutePath),
+                Line: line + 1,
+                Character: character + 1,
+                Definitions: Array.Empty<LocationItem>());
         }
 
-        return sb.ToString();
+        return new DefinitionResponse(
+            Summary: $"Found {locations.Length} definition(s).",
+            FilePath: FormatPath(absolutePath),
+            Line: line + 1,
+            Character: character + 1,
+            Definitions: locations.Select(MapLocation).ToArray());
     }
 
-    public async Task<string> GetReferencesAsync(
+    public async Task<ReferencesResponse> GetReferencesAsync(
         string filePath,
         int line,
         int character,
@@ -149,56 +169,79 @@ public sealed class CSharpDocumentAnalysisService
             includeDeclaration,
             cancellationToken);
         if (locations == null || locations.Length == 0)
-            return "No references found.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {locations.Length} reference(s):\n");
-
-        var grouped = locations.GroupBy(l => new Uri(l.Uri).LocalPath);
-        foreach (var group in grouped)
         {
-            sb.AppendLine($"• {group.Key}");
-            foreach (var loc in group.OrderBy(l => l.Range.Start.Line))
-                sb.AppendLine($"  Line {loc.Range.Start.Line + 1}, Col {loc.Range.Start.Character + 1}");
+            return new ReferencesResponse(
+                Summary: "No references found.",
+                FilePath: FormatPath(absolutePath),
+                Line: line + 1,
+                Character: character + 1,
+                IncludeDeclaration: includeDeclaration,
+                TotalReferences: 0,
+                References: Array.Empty<LocationItem>());
         }
 
-        return sb.ToString();
+        return new ReferencesResponse(
+            Summary: $"Found {locations.Length} reference(s).",
+            FilePath: FormatPath(absolutePath),
+            Line: line + 1,
+            Character: character + 1,
+            IncludeDeclaration: includeDeclaration,
+            TotalReferences: locations.Length,
+            References: locations.Select(MapLocation).ToArray());
     }
 
-    public async Task<string> GetSymbolsAsync(string filePath, string? content, CancellationToken cancellationToken)
+    public async Task<SymbolsResponse> GetSymbolsAsync(string filePath, string? content, CancellationToken cancellationToken)
     {
         var absolutePath = _workspaceSession.GetAbsolutePath(filePath);
         await _workspaceSession.EnsureDocumentOpenAsync(absolutePath, content, cancellationToken);
 
         var symbols = await _lspClient.GetDocumentSymbolsAsync(absolutePath, cancellationToken);
         if (symbols == null)
-            return "No symbols found.";
-
-        var sb = new StringBuilder();
+        {
+            return new SymbolsResponse(
+                Summary: "No symbols found.",
+                FilePath: FormatPath(absolutePath),
+                TotalSymbols: 0,
+                Symbols: Array.Empty<DocumentSymbolItem>());
+        }
 
         if (symbols is DocumentSymbol[] documentSymbols)
         {
-            sb.AppendLine("Document Symbols:\n");
-            FormatDocumentSymbols(sb, documentSymbols, 0);
-            return sb.ToString();
+            var items = documentSymbols.Select(MapDocumentSymbol).ToArray();
+            return new SymbolsResponse(
+                Summary: $"Found {CountDocumentSymbols(items)} symbol(s).",
+                FilePath: FormatPath(absolutePath),
+                TotalSymbols: CountDocumentSymbols(items),
+                Symbols: items);
         }
 
         if (symbols is SymbolInformation[] symbolInformation)
         {
-            sb.AppendLine($"Found {symbolInformation.Length} symbol(s):\n");
-            foreach (var sym in symbolInformation)
-            {
-                sb.AppendLine($"• {sym.Name} ({sym.Kind})");
-                if (!string.IsNullOrEmpty(sym.ContainerName))
-                    sb.AppendLine($"  Container: {sym.ContainerName}");
-                sb.AppendLine($"  Line {sym.Location.Range.Start.Line + 1}");
-            }
+            var items = symbolInformation
+                .Select(sym => new DocumentSymbolItem(
+                    sym.Name,
+                    sym.Kind.ToString(),
+                    sym.DetailOrNull(),
+                    sym.ContainerName,
+                    sym.Location.Range.Start.Line + 1,
+                    sym.Location.Range.Start.Character + 1,
+                    Array.Empty<DocumentSymbolItem>()))
+                .ToArray();
+            return new SymbolsResponse(
+                Summary: $"Found {items.Length} symbol(s).",
+                FilePath: FormatPath(absolutePath),
+                TotalSymbols: items.Length,
+                Symbols: items);
         }
 
-        return sb.ToString();
+        return new SymbolsResponse(
+            Summary: "No symbols found.",
+            FilePath: FormatPath(absolutePath),
+            TotalSymbols: 0,
+            Symbols: Array.Empty<DocumentSymbolItem>());
     }
 
-    public async Task<string> GetCodeActionsAsync(
+    public async Task<CodeActionsResponse> GetCodeActionsAsync(
         string filePath,
         int startLine,
         int startCharacter,
@@ -227,22 +270,24 @@ public sealed class CSharpDocumentAnalysisService
             relevantDiagnostics,
             cancellationToken);
         if (actions == null || actions.Length == 0)
-            return "No code actions available.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {actions.Length} code action(s):\n");
-
-        foreach (var action in actions)
         {
-            sb.AppendLine($"• {action.Title}");
-            if (!string.IsNullOrEmpty(action.Kind))
-                sb.AppendLine($"  Kind: {action.Kind}");
+            return new CodeActionsResponse(
+                Summary: "No code actions available.",
+                FilePath: FormatPath(absolutePath),
+                Range: new RangeItem(startLine + 1, startCharacter + 1, endLine + 1, endCharacter + 1),
+                TotalActions: 0,
+                Actions: Array.Empty<CodeActionItem>());
         }
 
-        return sb.ToString();
+        return new CodeActionsResponse(
+            Summary: $"Found {actions.Length} code action(s).",
+            FilePath: FormatPath(absolutePath),
+            Range: new RangeItem(startLine + 1, startCharacter + 1, endLine + 1, endCharacter + 1),
+            TotalActions: actions.Length,
+            Actions: actions.Select(action => new CodeActionItem(action.Title, action.Kind)).ToArray());
     }
 
-    public async Task<string> RenameAsync(
+    public async Task<RenamePreviewResponse> RenameAsync(
         string filePath,
         int line,
         int character,
@@ -255,23 +300,34 @@ public sealed class CSharpDocumentAnalysisService
 
         var edit = await _lspClient.RenameSymbolAsync(absolutePath, line, character, newName, cancellationToken);
         if (edit == null || edit.Changes == null || edit.Changes.Count == 0)
-            return "Cannot rename symbol at this position.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Rename to '{newName}' would affect:\n");
-
-        var totalEdits = 0;
-        foreach (var (uri, edits) in edit.Changes)
         {
-            var path = new Uri(uri).LocalPath;
-            sb.AppendLine($"• {path}: {edits.Length} edit(s)");
-            totalEdits += edits.Length;
+            return new RenamePreviewResponse(
+                Summary: "Cannot rename symbol at this position.",
+                FilePath: FormatPath(absolutePath),
+                Line: line + 1,
+                Character: character + 1,
+                NewName: newName,
+                TotalEdits: 0,
+                TotalFiles: 0,
+                Files: Array.Empty<RenameFileEditItem>());
         }
 
-        sb.AppendLine($"\nTotal: {totalEdits} edit(s) in {edit.Changes.Count} file(s)");
-        sb.AppendLine("\nNote: This is a preview. Apply the rename in your editor to make changes.");
+        var files = edit.Changes
+            .Select(change => new RenameFileEditItem(
+                FormatPath(new Uri(change.Key).LocalPath),
+                change.Value.Length))
+            .OrderBy(file => file.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
-        return sb.ToString();
+        return new RenamePreviewResponse(
+            Summary: $"Rename to '{newName}' would affect {files.Sum(file => file.EditCount)} edit(s) in {files.Length} file(s).",
+            FilePath: FormatPath(absolutePath),
+            Line: line + 1,
+            Character: character + 1,
+            NewName: newName,
+            TotalEdits: files.Sum(file => file.EditCount),
+            TotalFiles: files.Length,
+            Files: files);
     }
 
     internal static string FormatHoverContent(object contents)
@@ -305,17 +361,155 @@ public sealed class CSharpDocumentAnalysisService
         return contents.ToString() ?? "";
     }
 
-    private static void FormatDocumentSymbols(StringBuilder sb, DocumentSymbol[] symbols, int indent)
+    private string FormatPath(string filePath)
     {
-        var prefix = new string(' ', indent * 2);
-        foreach (var sym in symbols)
-        {
-            sb.AppendLine($"{prefix}• {sym.Name} ({sym.Kind}) - Line {sym.Range.Start.Line + 1}");
-            if (!string.IsNullOrEmpty(sym.Detail))
-                sb.AppendLine($"{prefix}  {sym.Detail}");
+        var workspacePath = _workspaceSession.WorkspacePath;
+        if (string.IsNullOrWhiteSpace(workspacePath))
+            return filePath;
 
-            if (sym.Children != null && sym.Children.Length > 0)
-                FormatDocumentSymbols(sb, sym.Children, indent + 1);
+        try
+        {
+            return Path.GetRelativePath(workspacePath, filePath);
+        }
+        catch (ArgumentException)
+        {
+            return filePath;
         }
     }
+
+    private static string FormatSeverity(DiagnosticSeverity? severity)
+        => severity switch
+        {
+            DiagnosticSeverity.Error => "ERROR",
+            DiagnosticSeverity.Warning => "WARNING",
+            DiagnosticSeverity.Information => "INFO",
+            DiagnosticSeverity.Hint => "HINT",
+            _ => "UNKNOWN"
+        };
+
+    private LocationItem MapLocation(Location location)
+        => new(
+            FormatPath(new Uri(location.Uri).LocalPath),
+            location.Range.Start.Line + 1,
+            location.Range.Start.Character + 1);
+
+    private static DocumentSymbolItem MapDocumentSymbol(DocumentSymbol symbol)
+        => new(
+            symbol.Name,
+            symbol.Kind.ToString(),
+            symbol.Detail,
+            null,
+            symbol.Range.Start.Line + 1,
+            symbol.Range.Start.Character + 1,
+            symbol.Children?.Select(MapDocumentSymbol).ToArray() ?? Array.Empty<DocumentSymbolItem>());
+
+    private static int CountDocumentSymbols(IEnumerable<DocumentSymbolItem> symbols)
+        => symbols.Sum(symbol => 1 + CountDocumentSymbols(symbol.Children));
+
+    public sealed record DiagnosticsResponse(
+        string Summary,
+        string FilePath,
+        int TotalDiagnostics,
+        DocumentDiagnosticItem[] Diagnostics) : IStructuredToolResult;
+
+    public sealed record DocumentDiagnosticItem(
+        string Severity,
+        int Line,
+        int Character,
+        string Message,
+        string? Code);
+
+    public sealed record HoverResponse(
+        string Summary,
+        string FilePath,
+        int Line,
+        int Character,
+        string? Content) : IStructuredToolResult;
+
+    public sealed record CompletionsResponse(
+        string Summary,
+        string FilePath,
+        int Line,
+        int Character,
+        int TotalCompletions,
+        CompletionItem[] Items,
+        int TruncatedCompletions) : IStructuredToolResult;
+
+    public sealed record CompletionItem(
+        string Label,
+        string Kind,
+        string? Detail);
+
+    public sealed record DefinitionResponse(
+        string Summary,
+        string FilePath,
+        int Line,
+        int Character,
+        LocationItem[] Definitions) : IStructuredToolResult;
+
+    public sealed record ReferencesResponse(
+        string Summary,
+        string FilePath,
+        int Line,
+        int Character,
+        bool IncludeDeclaration,
+        int TotalReferences,
+        LocationItem[] References) : IStructuredToolResult;
+
+    public sealed record LocationItem(
+        string FilePath,
+        int Line,
+        int Character);
+
+    public sealed record SymbolsResponse(
+        string Summary,
+        string FilePath,
+        int TotalSymbols,
+        DocumentSymbolItem[] Symbols) : IStructuredToolResult;
+
+    public sealed record DocumentSymbolItem(
+        string Name,
+        string Kind,
+        string? Detail,
+        string? ContainerName,
+        int Line,
+        int Character,
+        DocumentSymbolItem[] Children);
+
+    public sealed record CodeActionsResponse(
+        string Summary,
+        string FilePath,
+        RangeItem Range,
+        int TotalActions,
+        CodeActionItem[] Actions) : IStructuredToolResult;
+
+    public sealed record CodeActionItem(
+        string Title,
+        string? Kind);
+
+    public sealed record RenamePreviewResponse(
+        string Summary,
+        string FilePath,
+        int Line,
+        int Character,
+        string NewName,
+        int TotalEdits,
+        int TotalFiles,
+        RenameFileEditItem[] Files) : IStructuredToolResult;
+
+    public sealed record RenameFileEditItem(
+        string FilePath,
+        int EditCount);
+
+    public sealed record RangeItem(
+        int StartLine,
+        int StartCharacter,
+        int EndLine,
+        int EndCharacter);
+}
+
+internal static class SymbolInformationExtensions
+{
+    public static string? DetailOrNull(this SymbolInformation symbol)
+        => null;
 }

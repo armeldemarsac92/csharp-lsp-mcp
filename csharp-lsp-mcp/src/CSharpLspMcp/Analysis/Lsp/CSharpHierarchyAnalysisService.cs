@@ -1,4 +1,4 @@
-using System.Text;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Lsp;
 using CSharpLspMcp.Workspace;
 
@@ -17,7 +17,7 @@ public sealed class CSharpHierarchyAnalysisService
         _workspaceSession = workspaceSession;
     }
 
-    public async Task<string> FindImplementationsAsync(
+    public async Task<ImplementationSearchResponse> FindImplementationsAsync(
         string filePath,
         int line,
         int character,
@@ -33,30 +33,32 @@ public sealed class CSharpHierarchyAnalysisService
         if (hierarchyRoot != null && SupportsTypeHierarchyImplementations(hierarchyRoot.Kind))
         {
             var subtypes = await _lspClient.GetTypeHierarchySubtypesAsync(hierarchyRoot, cancellationToken) ?? Array.Empty<TypeHierarchyItem>();
-            return FormatHierarchyImplementations(subtypes, maxResults);
+            return new ImplementationSearchResponse(
+                Summary: $"Found {subtypes.Length} implementation(s).",
+                Root: MapHierarchyItem(hierarchyRoot),
+                Implementations: subtypes.Take(Math.Max(1, maxResults)).Select(MapHierarchyItem).ToArray(),
+                TruncatedImplementations: Math.Max(0, subtypes.Length - Math.Max(1, maxResults)));
         }
 
         var locations = await _lspClient.GetImplementationsAsync(absolutePath, line, character, cancellationToken);
         if (locations == null || locations.Length == 0)
-            return "No implementations found.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {locations.Length} implementation(s):\n");
-
-        foreach (var location in locations.Take(maxResults))
         {
-            var path = new Uri(location.Uri).LocalPath;
-            sb.AppendLine($"• {path}");
-            sb.AppendLine($"  Line {location.Range.Start.Line + 1}, Col {location.Range.Start.Character + 1}");
+            return new ImplementationSearchResponse(
+                Summary: "No implementations found.",
+                Root: null,
+                Implementations: Array.Empty<HierarchyNodeItem>(),
+                TruncatedImplementations: 0);
         }
 
-        if (locations.Length > maxResults)
-            sb.AppendLine($"\n... and {locations.Length - maxResults} more");
-
-        return sb.ToString();
+        var effectiveMaxResults = Math.Max(1, maxResults);
+        return new ImplementationSearchResponse(
+            Summary: $"Found {locations.Length} implementation(s).",
+            Root: null,
+            Implementations: locations.Take(effectiveMaxResults).Select(MapLocation).ToArray(),
+            TruncatedImplementations: Math.Max(0, locations.Length - effectiveMaxResults));
     }
 
-    public async Task<string> GetCallHierarchyAsync(
+    public async Task<CallHierarchyResponse> GetCallHierarchyAsync(
         string filePath,
         int line,
         int character,
@@ -69,29 +71,36 @@ public sealed class CSharpHierarchyAnalysisService
 
         var items = await _lspClient.PrepareCallHierarchyAsync(absolutePath, line, character, cancellationToken);
         if (items == null || items.Length == 0)
-            return "No call hierarchy available at this position.";
+        {
+            return new CallHierarchyResponse(
+                Summary: "No call hierarchy available at this position.",
+                Root: null,
+                Incoming: Array.Empty<CallHierarchyEdgeItem>(),
+                Outgoing: Array.Empty<CallHierarchyEdgeItem>(),
+                TruncatedIncoming: 0,
+                TruncatedOutgoing: 0,
+                PreparedRootCount: 0);
+        }
 
         var item = items[0];
         var incoming = await _lspClient.GetIncomingCallsAsync(item, cancellationToken) ?? Array.Empty<CallHierarchyIncomingCall>();
         var outgoing = await _lspClient.GetOutgoingCallsAsync(item, cancellationToken) ?? Array.Empty<CallHierarchyOutgoingCall>();
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Call hierarchy for {item.Name} ({item.Kind})");
-        AppendHierarchyItemHeader(sb, item.Detail, item.Uri, item.SelectionRange.Start);
-
-        if (items.Length > 1)
-            sb.AppendLine($"Prepared {items.Length} hierarchy roots; showing the top-ranked match.\n");
-
-        sb.AppendLine($"Incoming Calls ({incoming.Length}):");
-        AppendIncomingCalls(sb, incoming, maxResults);
-
-        sb.AppendLine($"\nOutgoing Calls ({outgoing.Length}):");
-        AppendOutgoingCalls(sb, outgoing, maxResults);
-
-        return sb.ToString();
+        var effectiveMaxResults = Math.Max(1, maxResults);
+        return new CallHierarchyResponse(
+            Summary: $"Prepared call hierarchy for {item.Name} with {incoming.Length} incoming and {outgoing.Length} outgoing call(s).",
+            Root: MapHierarchyItem(item),
+            Incoming: incoming.Take(effectiveMaxResults)
+                .Select(call => MapCallHierarchyEdge(call.From, call.FromRanges.FirstOrDefault()?.Start))
+                .ToArray(),
+            Outgoing: outgoing.Take(effectiveMaxResults)
+                .Select(call => MapCallHierarchyEdge(call.To, call.FromRanges.FirstOrDefault()?.Start))
+                .ToArray(),
+            TruncatedIncoming: Math.Max(0, incoming.Length - effectiveMaxResults),
+            TruncatedOutgoing: Math.Max(0, outgoing.Length - effectiveMaxResults),
+            PreparedRootCount: items.Length);
     }
 
-    public async Task<string> GetTypeHierarchyAsync(
+    public async Task<TypeHierarchyResponse> GetTypeHierarchyAsync(
         string filePath,
         int line,
         int character,
@@ -104,128 +113,110 @@ public sealed class CSharpHierarchyAnalysisService
 
         var items = await _lspClient.PrepareTypeHierarchyAsync(absolutePath, line, character, cancellationToken);
         if (items == null || items.Length == 0)
-            return "No type hierarchy available at this position.";
+        {
+            return new TypeHierarchyResponse(
+                Summary: "No type hierarchy available at this position.",
+                Root: null,
+                Supertypes: Array.Empty<HierarchyNodeItem>(),
+                Subtypes: Array.Empty<HierarchyNodeItem>(),
+                TruncatedSupertypes: 0,
+                TruncatedSubtypes: 0,
+                PreparedRootCount: 0);
+        }
 
         var item = items[0];
         var supertypes = await _lspClient.GetTypeHierarchySupertypesAsync(item, cancellationToken) ?? Array.Empty<TypeHierarchyItem>();
         var subtypes = await _lspClient.GetTypeHierarchySubtypesAsync(item, cancellationToken) ?? Array.Empty<TypeHierarchyItem>();
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Type hierarchy for {item.Name} ({item.Kind})");
-        AppendHierarchyItemHeader(sb, item.Detail, item.Uri, item.SelectionRange.Start);
-
-        if (items.Length > 1)
-            sb.AppendLine($"Prepared {items.Length} hierarchy roots; showing the top-ranked match.\n");
-
-        sb.AppendLine($"Supertypes ({supertypes.Length}):");
-        AppendTypeHierarchyItems(sb, supertypes, maxResults);
-
-        sb.AppendLine($"\nSubtypes ({subtypes.Length}):");
-        AppendTypeHierarchyItems(sb, subtypes, maxResults);
-
-        return sb.ToString();
+        var effectiveMaxResults = Math.Max(1, maxResults);
+        return new TypeHierarchyResponse(
+            Summary: $"Prepared type hierarchy for {item.Name} with {supertypes.Length} supertype(s) and {subtypes.Length} subtype(s).",
+            Root: MapHierarchyItem(item),
+            Supertypes: supertypes.Take(effectiveMaxResults).Select(MapHierarchyItem).ToArray(),
+            Subtypes: subtypes.Take(effectiveMaxResults).Select(MapHierarchyItem).ToArray(),
+            TruncatedSupertypes: Math.Max(0, supertypes.Length - effectiveMaxResults),
+            TruncatedSubtypes: Math.Max(0, subtypes.Length - effectiveMaxResults),
+            PreparedRootCount: items.Length);
     }
 
-    private static void AppendIncomingCalls(StringBuilder sb, IReadOnlyCollection<CallHierarchyIncomingCall> calls, int maxResults)
+    private static HierarchyNodeItem MapHierarchyItem(TypeHierarchyItem item)
+        => new(
+            item.Name,
+            item.Kind.ToString(),
+            item.Detail,
+            new Uri(item.Uri).LocalPath,
+            item.SelectionRange.Start.Line + 1,
+            item.SelectionRange.Start.Character + 1);
+
+    private static HierarchyNodeItem MapHierarchyItem(CallHierarchyItem item)
+        => new(
+            item.Name,
+            item.Kind.ToString(),
+            item.Detail,
+            new Uri(item.Uri).LocalPath,
+            item.SelectionRange.Start.Line + 1,
+            item.SelectionRange.Start.Character + 1);
+
+    private static HierarchyNodeItem MapLocation(Location location)
+        => new(
+            Path.GetFileName(new Uri(location.Uri).LocalPath),
+            "Location",
+            null,
+            new Uri(location.Uri).LocalPath,
+            location.Range.Start.Line + 1,
+            location.Range.Start.Character + 1);
+
+    private static CallHierarchyEdgeItem MapCallHierarchyEdge(CallHierarchyItem item, Position? callSiteStart)
     {
-        if (calls.Count == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
-
-        foreach (var call in calls.Take(maxResults))
-        {
-            AppendCallSite(sb, call.From, call.FromRanges.FirstOrDefault()?.Start);
-        }
-
-        if (calls.Count > maxResults)
-            sb.AppendLine($"... and {calls.Count - maxResults} more");
-    }
-
-    private static void AppendOutgoingCalls(StringBuilder sb, IReadOnlyCollection<CallHierarchyOutgoingCall> calls, int maxResults)
-    {
-        if (calls.Count == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
-
-        foreach (var call in calls.Take(maxResults))
-        {
-            AppendCallSite(sb, call.To, call.FromRanges.FirstOrDefault()?.Start);
-        }
-
-        if (calls.Count > maxResults)
-            sb.AppendLine($"... and {calls.Count - maxResults} more");
-    }
-
-    private static void AppendTypeHierarchyItems(StringBuilder sb, IReadOnlyCollection<TypeHierarchyItem> items, int maxResults)
-    {
-        if (items.Count == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
-
-        foreach (var item in items.Take(maxResults))
-        {
-            var path = new Uri(item.Uri).LocalPath;
-            sb.AppendLine($"• {item.Name} ({item.Kind})");
-            if (!string.IsNullOrWhiteSpace(item.Detail))
-                sb.AppendLine($"  {item.Detail}");
-            sb.AppendLine($"  {path}:{item.SelectionRange.Start.Line + 1}");
-        }
-
-        if (items.Count > maxResults)
-            sb.AppendLine($"... and {items.Count - maxResults} more");
-    }
-
-    private static void AppendCallSite(StringBuilder sb, CallHierarchyItem item, Position? callSiteStart)
-    {
-        var path = new Uri(item.Uri).LocalPath;
-        sb.AppendLine($"• {item.Name} ({item.Kind})");
-        if (!string.IsNullOrWhiteSpace(item.Detail))
-            sb.AppendLine($"  {item.Detail}");
-
-        if (callSiteStart != null)
-            sb.AppendLine($"  {path}:{callSiteStart.Line + 1}:{callSiteStart.Character + 1}");
-        else
-            sb.AppendLine($"  {path}:{item.SelectionRange.Start.Line + 1}:{item.SelectionRange.Start.Character + 1}");
-    }
-
-    private static void AppendHierarchyItemHeader(StringBuilder sb, string? detail, string uri, Position position)
-    {
-        if (!string.IsNullOrWhiteSpace(detail))
-            sb.AppendLine(detail);
-
-        var path = new Uri(uri).LocalPath;
-        sb.AppendLine($"{path}:{position.Line + 1}:{position.Character + 1}\n");
-    }
-
-    private static string FormatHierarchyImplementations(IReadOnlyCollection<TypeHierarchyItem> items, int maxResults)
-    {
-        if (items.Count == 0)
-            return "No implementations found.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {items.Count} implementation(s):\n");
-
-        foreach (var item in items.Take(maxResults))
-        {
-            var path = new Uri(item.Uri).LocalPath;
-            sb.AppendLine($"• {item.Name} ({item.Kind})");
-            if (!string.IsNullOrWhiteSpace(item.Detail))
-                sb.AppendLine($"  {item.Detail}");
-            sb.AppendLine($"  {path}:{item.SelectionRange.Start.Line + 1}");
-        }
-
-        if (items.Count > maxResults)
-            sb.AppendLine($"\n... and {items.Count - maxResults} more");
-
-        return sb.ToString();
+        var location = callSiteStart ?? item.SelectionRange.Start;
+        return new CallHierarchyEdgeItem(
+            item.Name,
+            item.Kind.ToString(),
+            item.Detail,
+            new Uri(item.Uri).LocalPath,
+            location.Line + 1,
+            location.Character + 1);
     }
 
     private static bool SupportsTypeHierarchyImplementations(SymbolKind kind)
         => kind is SymbolKind.Interface or SymbolKind.Class;
+
+    public sealed record ImplementationSearchResponse(
+        string Summary,
+        HierarchyNodeItem? Root,
+        HierarchyNodeItem[] Implementations,
+        int TruncatedImplementations) : IStructuredToolResult;
+
+    public sealed record CallHierarchyResponse(
+        string Summary,
+        HierarchyNodeItem? Root,
+        CallHierarchyEdgeItem[] Incoming,
+        CallHierarchyEdgeItem[] Outgoing,
+        int TruncatedIncoming,
+        int TruncatedOutgoing,
+        int PreparedRootCount) : IStructuredToolResult;
+
+    public sealed record TypeHierarchyResponse(
+        string Summary,
+        HierarchyNodeItem? Root,
+        HierarchyNodeItem[] Supertypes,
+        HierarchyNodeItem[] Subtypes,
+        int TruncatedSupertypes,
+        int TruncatedSubtypes,
+        int PreparedRootCount) : IStructuredToolResult;
+
+    public sealed record HierarchyNodeItem(
+        string Name,
+        string Kind,
+        string? Detail,
+        string FilePath,
+        int Line,
+        int Character);
+
+    public sealed record CallHierarchyEdgeItem(
+        string Name,
+        string Kind,
+        string? Detail,
+        string FilePath,
+        int Line,
+        int Character);
 }

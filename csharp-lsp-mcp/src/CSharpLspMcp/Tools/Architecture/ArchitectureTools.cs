@@ -31,10 +31,12 @@ public sealed class ArchitectureTools : CSharpToolBase
         [Description("Maximum number of projects to include in detail (default: 25)")] int maxProjects = 25,
         [Description("Maximum number of package references to show per project (default: 8)")] int maxPackagesPerProject = 8,
         [Description("Maximum number of project references to show per project (default: 8)")] int maxProjectReferencesPerProject = 8,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_project_overview",
+            format,
             ct => _projectOverviewAnalysisService.GetProjectOverviewAsync(
                 maxProjects,
                 maxPackagesPerProject,
@@ -49,10 +51,12 @@ public sealed class ArchitectureTools : CSharpToolBase
         [Description("Include AddHostedService registrations and BackgroundService implementations (default: true)")] bool includeHostedServices = true,
         [Description("Include middleware pipeline calls from Program.cs such as UseAuthentication (default: true)")] bool includeMiddlewarePipeline = true,
         [Description("Maximum number of items to include per section (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_find_entrypoints",
+            format,
             ct => _entrypointAnalysisService.FindEntrypointsAsync(
                 includeAspNetRoutes,
                 includeHostedServices,
@@ -67,10 +71,12 @@ public sealed class ArchitectureTools : CSharpToolBase
         [Description("Optional filter for service type, implementation type, or registration source text.")] string? query = null,
         [Description("Include likely constructor consumers of each registered service (default: true)")] bool includeConsumers = true,
         [Description("Maximum number of registrations and consumers to include per section (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_find_registrations",
+            format,
             ct => _registrationAnalysisService.FindRegistrationsAsync(
                 query,
                 includeConsumers,

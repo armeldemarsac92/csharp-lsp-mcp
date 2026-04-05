@@ -72,15 +72,16 @@ public sealed class CSharpProjectOverviewAnalysisServiceTests
 
             var overview = await service.GetProjectOverviewAsync(10, 5, 5, CancellationToken.None);
 
-            Assert.Contains("Solution root:", overview);
-            Assert.Contains("Sample.slnx", overview);
-            Assert.Contains("Sample.App [web]", overview);
-            Assert.Contains("Sample.Core [classlib]", overview);
-            Assert.Contains("Sample.Tests [test]", overview);
-            Assert.Contains("Entrypoints: src/Sample.App/Program.cs", overview);
-            Assert.Contains("Project refs: Sample.Core", overview);
-            Assert.Contains("dotnet build Sample.slnx", overview);
-            Assert.Contains("dotnet test Sample.slnx", overview);
+            Assert.Equal(workspacePath, overview.SolutionRoot);
+            Assert.Contains("Sample.slnx", overview.SolutionFiles);
+            Assert.Equal(3, overview.TotalProjects);
+            Assert.Contains(overview.Projects, project => project.Name == "Sample.App" && project.ProjectType == "web");
+            Assert.Contains(overview.Projects, project => project.Name == "Sample.Core" && project.ProjectType == "classlib");
+            Assert.Contains(overview.Projects, project => project.Name == "Sample.Tests" && project.ProjectType == "test");
+            Assert.Contains(overview.Projects, project => project.Entrypoints.Contains("src/Sample.App/Program.cs"));
+            Assert.Contains(overview.Projects, project => project.ProjectReferences.Contains("Sample.Core"));
+            Assert.Contains("dotnet build Sample.slnx", overview.SuggestedCommands);
+            Assert.Contains("dotnet test Sample.slnx", overview.SuggestedCommands);
         }
         finally
         {

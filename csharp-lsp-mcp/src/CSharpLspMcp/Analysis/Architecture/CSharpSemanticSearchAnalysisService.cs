@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Workspace;
 
 namespace CSharpLspMcp.Analysis.Architecture;
@@ -34,7 +35,7 @@ public sealed class CSharpSemanticSearchAnalysisService
         _workspaceState = workspaceState;
     }
 
-    public Task<string> SearchAsync(
+    public Task<SemanticSearchResponse> SearchAsync(
         string query,
         string? projectFilter,
         bool includeTests,
@@ -43,7 +44,7 @@ public sealed class CSharpSemanticSearchAnalysisService
     {
         var workspacePath = _workspaceState.CurrentPath;
         if (string.IsNullOrWhiteSpace(workspacePath))
-            return Task.FromResult("Error: Workspace is not set. Call csharp_set_workspace first.");
+            throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -62,8 +63,8 @@ public sealed class CSharpSemanticSearchAnalysisService
 
         if (matches.Length == 0 && !IsSupportedQuery(normalizedQuery))
         {
-            return Task.FromResult(
-                $"Error: Unsupported semantic search query '{query}'. Supported queries: aspnet_endpoints, hosted_services, di_registrations, config_bindings, middleware_pipeline.");
+            throw new InvalidOperationException(
+                $"Unsupported semantic search query '{query}'. Supported queries: aspnet_endpoints, hosted_services, di_registrations, config_bindings, middleware_pipeline.");
         }
 
         var filteredMatches = matches
@@ -77,24 +78,29 @@ public sealed class CSharpSemanticSearchAnalysisService
         if (filteredMatches.Length == 0)
         {
             return Task.FromResult(
-                $"No semantic matches found for '{normalizedQuery}'{FormatProjectFilterSuffix(projectFilter)}.");
+                new SemanticSearchResponse(
+                    Summary: $"No semantic matches found for '{normalizedQuery}'{FormatProjectFilterSuffix(projectFilter)}.",
+                    SolutionRoot: workspacePath,
+                    Query: normalizedQuery,
+                    ProjectFilter: projectFilter,
+                    IncludeTests: includeTests,
+                    TotalMatches: 0,
+                    Matches: Array.Empty<SemanticSearchMatchItem>(),
+                    TruncatedMatches: 0));
         }
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"Semantic search: {normalizedQuery}");
-        if (!string.IsNullOrWhiteSpace(projectFilter))
-            sb.AppendLine($"Project filter: {projectFilter}");
-        sb.AppendLine($"Include tests: {includeTests}");
-        sb.AppendLine();
-        sb.AppendLine($"Matches ({filteredMatches.Length}):");
-
-        foreach (var match in filteredMatches.Take(effectiveMaxResults))
-            sb.AppendLine($"• [{match.Kind}] {match.RelativePath}:{match.LineNumber} {match.Text}");
-
-        if (filteredMatches.Length > effectiveMaxResults)
-            sb.AppendLine($"... and {filteredMatches.Length - effectiveMaxResults} more");
-
-        return Task.FromResult(sb.ToString().TrimEnd());
+        return Task.FromResult(
+            new SemanticSearchResponse(
+                Summary: $"Found {filteredMatches.Length} semantic match(es) for '{normalizedQuery}'.",
+                SolutionRoot: workspacePath,
+                Query: normalizedQuery,
+                ProjectFilter: projectFilter,
+                IncludeTests: includeTests,
+                TotalMatches: filteredMatches.Length,
+                Matches: filteredMatches.Take(effectiveMaxResults)
+                    .Select(match => new SemanticSearchMatchItem(match.Kind, match.RelativePath, match.LineNumber, match.Text))
+                    .ToArray(),
+                TruncatedMatches: Math.Max(0, filteredMatches.Length - effectiveMaxResults)));
     }
 
     private static IEnumerable<SearchMatch> FindAspNetEndpoints(string workspacePath)
@@ -357,6 +363,22 @@ public sealed class CSharpSemanticSearchAnalysisService
     }
 
     private sealed record SearchMatch(
+        string Kind,
+        string RelativePath,
+        int LineNumber,
+        string Text);
+
+    public sealed record SemanticSearchResponse(
+        string Summary,
+        string SolutionRoot,
+        string Query,
+        string? ProjectFilter,
+        bool IncludeTests,
+        int TotalMatches,
+        SemanticSearchMatchItem[] Matches,
+        int TruncatedMatches) : IStructuredToolResult;
+
+    public sealed record SemanticSearchMatchItem(
         string Kind,
         string RelativePath,
         int LineNumber,

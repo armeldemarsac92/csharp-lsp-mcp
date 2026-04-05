@@ -75,15 +75,18 @@ public sealed class CSharpRegistrationAnalysisServiceTests
 
             var summary = await service.FindRegistrationsAsync(null, true, 10, CancellationToken.None);
 
-            Assert.Contains("Registrations (4):", summary);
-            Assert.Contains("IFooService [Scoped]", summary);
-            Assert.Contains("Implementation: FooService", summary);
-            Assert.Contains("FooConsumer(IFooService, IEnumerable<IMessageSink>)", summary);
-            Assert.Contains("IClock [Singleton]", summary);
-            Assert.Contains("Kind: factory", summary);
-            Assert.Contains("ClockConsumer(IClock)", summary);
-            Assert.Contains("IMessageSink [Singleton]", summary);
-            Assert.Contains("Kind: enumerable", summary);
+            Assert.Equal(4, summary.TotalRegistrations);
+
+            var fooRegistration = Assert.Single(summary.Registrations.Where(item => item.ServiceType == "IFooService"));
+            Assert.Equal("FooService", fooRegistration.ImplementationType);
+            Assert.Contains(fooRegistration.Consumers, consumer => consumer.DisplayText.Contains("FooConsumer(IFooService, IEnumerable<IMessageSink>)", StringComparison.Ordinal));
+
+            var clockRegistration = Assert.Single(summary.Registrations.Where(item => item.ServiceType == "IClock"));
+            Assert.True(clockRegistration.IsFactory);
+            Assert.Contains(clockRegistration.Consumers, consumer => consumer.DisplayText.Contains("ClockConsumer(IClock)", StringComparison.Ordinal));
+
+            var sinkRegistration = Assert.Single(summary.Registrations.Where(item => item.ServiceType == "IMessageSink"));
+            Assert.True(sinkRegistration.IsEnumerable);
         }
         finally
         {
@@ -131,8 +134,8 @@ public sealed class CSharpRegistrationAnalysisServiceTests
 
             var summary = await service.FindRegistrationsAsync("Foo", false, 10, CancellationToken.None);
 
-            Assert.Contains("IFooService [Scoped]", summary);
-            Assert.DoesNotContain("IBarService [Scoped]", summary);
+            Assert.Single(summary.Registrations);
+            Assert.Equal("IFooService", summary.Registrations[0].ServiceType);
         }
         finally
         {
@@ -185,8 +188,8 @@ public sealed class CSharpRegistrationAnalysisServiceTests
 
             var summary = await service.FindRegistrationsAsync("IFooService", true, 10, CancellationToken.None);
 
-            Assert.Contains("Consumers (0):", summary);
-            Assert.DoesNotContain("FooWorker(ILogger<FooService>)", summary);
+            var registration = Assert.Single(summary.Registrations);
+            Assert.Empty(registration.Consumers);
         }
         finally
         {

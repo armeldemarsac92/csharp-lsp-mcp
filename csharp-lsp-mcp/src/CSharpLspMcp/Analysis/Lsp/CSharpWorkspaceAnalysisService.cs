@@ -1,4 +1,4 @@
-using System.Text;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Lsp;
 using CSharpLspMcp.Workspace;
 
@@ -17,25 +17,33 @@ public sealed class CSharpWorkspaceAnalysisService
         _workspaceSession = workspaceSession;
     }
 
-    public async Task<string> GetWorkspaceDiagnosticsAsync(
+    public async Task<WorkspaceDiagnosticsResponse> GetWorkspaceDiagnosticsAsync(
         int maxDocuments,
         int maxDiagnosticsPerDocument,
         CancellationToken cancellationToken)
     {
         var workspacePath = _workspaceSession.WorkspacePath;
         if (string.IsNullOrWhiteSpace(workspacePath))
-            return "Error: Workspace is not set. Call csharp_set_workspace first.";
+            throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         if (!_workspaceSession.IsRunning)
         {
             var started = await _workspaceSession.SetWorkspaceAsync(workspacePath, cancellationToken);
             if (!started)
-                return $"Error: Failed to start LSP server for workspace: {workspacePath}";
+                throw new InvalidOperationException($"Failed to start LSP server for workspace: {workspacePath}");
         }
 
         var report = await _lspClient.GetWorkspaceDiagnosticsAsync(cancellationToken);
         if (report == null || report.Items.Length == 0)
-            return "No workspace diagnostics found.";
+        {
+            return new WorkspaceDiagnosticsResponse(
+                Summary: "No workspace diagnostics found.",
+                SolutionRoot: workspacePath,
+                TotalDiagnostics: 0,
+                TotalDocuments: 0,
+                Documents: Array.Empty<WorkspaceDiagnosticDocument>(),
+                TruncatedDocuments: 0);
+        }
 
         var documentsWithDiagnostics = report.Items
             .Where(item => string.Equals(item.Kind, "full", StringComparison.OrdinalIgnoreCase))
@@ -49,33 +57,39 @@ public sealed class CSharpWorkspaceAnalysisService
             .ToArray();
 
         if (documentsWithDiagnostics.Length == 0)
-            return "No workspace diagnostics found.";
-
-        var totalDiagnostics = documentsWithDiagnostics.Sum(item => item.Diagnostics.Length);
-        var sb = new StringBuilder();
-        sb.AppendLine($"Found {totalDiagnostics} diagnostic(s) across {documentsWithDiagnostics.Length} document(s):\n");
-
-        foreach (var document in documentsWithDiagnostics.Take(maxDocuments))
         {
-            var path = new Uri(document.Item.Uri).LocalPath;
-            sb.AppendLine($"• {path} ({document.Diagnostics.Length})");
-
-            foreach (var diagnostic in document.Diagnostics
-                         .OrderBy(diag => diag.Range.Start.Line)
-                         .Take(maxDiagnosticsPerDocument))
-            {
-                sb.AppendLine(
-                    $"  [{FormatSeverity(diagnostic.Severity)}] {diagnostic.Range.Start.Line + 1}:{diagnostic.Range.Start.Character + 1} {diagnostic.Message}");
-            }
-
-            if (document.Diagnostics.Length > maxDiagnosticsPerDocument)
-                sb.AppendLine($"  ... and {document.Diagnostics.Length - maxDiagnosticsPerDocument} more");
+            return new WorkspaceDiagnosticsResponse(
+                Summary: "No workspace diagnostics found.",
+                SolutionRoot: workspacePath,
+                TotalDiagnostics: 0,
+                TotalDocuments: 0,
+                Documents: Array.Empty<WorkspaceDiagnosticDocument>(),
+                TruncatedDocuments: 0);
         }
 
-        if (documentsWithDiagnostics.Length > maxDocuments)
-            sb.AppendLine($"\n... and {documentsWithDiagnostics.Length - maxDocuments} more document(s)");
-
-        return sb.ToString();
+        var totalDiagnostics = documentsWithDiagnostics.Sum(item => item.Diagnostics.Length);
+        var effectiveMaxDocuments = Math.Max(1, maxDocuments);
+        var effectiveMaxDiagnostics = Math.Max(1, maxDiagnosticsPerDocument);
+        return new WorkspaceDiagnosticsResponse(
+            Summary: $"Found {totalDiagnostics} diagnostic(s) across {documentsWithDiagnostics.Length} document(s).",
+            SolutionRoot: workspacePath,
+            TotalDiagnostics: totalDiagnostics,
+            TotalDocuments: documentsWithDiagnostics.Length,
+            Documents: documentsWithDiagnostics.Take(effectiveMaxDocuments)
+                .Select(document => new WorkspaceDiagnosticDocument(
+                    new Uri(document.Item.Uri).LocalPath,
+                    document.Diagnostics.Length,
+                    document.Diagnostics.OrderBy(diag => diag.Range.Start.Line)
+                        .Take(effectiveMaxDiagnostics)
+                        .Select(diagnostic => new WorkspaceDiagnosticItem(
+                            FormatSeverity(diagnostic.Severity),
+                            diagnostic.Range.Start.Line + 1,
+                            diagnostic.Range.Start.Character + 1,
+                            diagnostic.Message))
+                        .ToArray(),
+                    Math.Max(0, document.Diagnostics.Length - effectiveMaxDiagnostics)))
+                .ToArray(),
+            TruncatedDocuments: Math.Max(0, documentsWithDiagnostics.Length - effectiveMaxDocuments));
     }
 
     private static string FormatSeverity(DiagnosticSeverity? severity)
@@ -89,4 +103,24 @@ public sealed class CSharpWorkspaceAnalysisService
             _ => "UNKNOWN"
         };
     }
+
+    public sealed record WorkspaceDiagnosticsResponse(
+        string Summary,
+        string SolutionRoot,
+        int TotalDiagnostics,
+        int TotalDocuments,
+        WorkspaceDiagnosticDocument[] Documents,
+        int TruncatedDocuments) : IStructuredToolResult;
+
+    public sealed record WorkspaceDiagnosticDocument(
+        string FilePath,
+        int DiagnosticCount,
+        WorkspaceDiagnosticItem[] Diagnostics,
+        int TruncatedDiagnostics);
+
+    public sealed record WorkspaceDiagnosticItem(
+        string Severity,
+        int Line,
+        int Character,
+        string Message);
 }

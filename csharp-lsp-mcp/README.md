@@ -1,418 +1,630 @@
-# csharp-lsp-mcp
+# C Sharp MCP / C# MCP Server for .NET and XAML
 
-An MCP (Model Context Protocol) server that provides C# and XAML language intelligence by integrating with `csharp-ls` (the lightweight C# Language Server) and built-in XAML analysis.
+`csharp-lsp-mcp` is a C Sharp MCP server for .NET repositories. It exposes C# and XAML language intelligence, workspace analysis, architecture discovery, DI tracing, test mapping, and dead-code heuristics through the Model Context Protocol.
 
-This enables Claude and other MCP-compatible AI assistants to get real-time compiler diagnostics, IntelliSense completions, type information, and more when working with C# code, plus comprehensive XAML validation and analysis for WPF/WinUI projects.
+If you are looking for a `c# mcp` or `c sharp MCP` server that is easy for an LLM agent to parse, this project is built for that exact use case:
 
-## Features
+- editor-style C# tools backed by `csharp-ls`
+- higher-level codebase analysis tools for .NET solutions
+- built-in XAML analysis for WPF and WinUI workflows
+- structured JSON output by default for agent consumption
 
-### C# Features (via csharp-ls)
-- **Diagnostics** - Get compiler errors and warnings in real-time
-- **Hover** - Type information and documentation at any position
-- **Completions** - IntelliSense suggestions
-- **Go to Definition** - Find where symbols are defined
-- **Find References** - Find all usages of a symbol
-- **Document Symbols** - List all classes, methods, properties in a file
-- **Code Actions** - Quick fixes and refactoring suggestions
-- **Rename** - Preview symbol renames across the workspace
+## What This C# MCP Server Does
 
-### XAML Features (built-in)
-- **Validation** - Check type references, property names, resource keys
-- **Binding Analysis** - Extract and validate data bindings
-- **Resource Tracking** - Find unused and missing resource references  
-- **Name Checking** - Detect duplicate x:Name declarations
-- **Structure View** - Visualize element hierarchy
-- **ViewModel Extraction** - Generate interfaces from XAML bindings
+This MCP server helps AI coding agents and MCP clients inspect medium-to-large .NET codebases faster.
 
-## Prerequisites
+### C# language tools
 
-### 1. Install .NET 8 SDK
+- workspace setup and shutdown
+- file diagnostics
+- hover, definition, references, symbols
+- completions, code actions, rename
+- workspace diagnostics
 
-Download from [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/8.0)
+### Codebase analysis tools
 
-### 2. Install csharp-ls
+- workspace symbol search
+- semantic search for ASP.NET endpoints, hosted services, DI registrations, configuration bindings, and middleware
+- implementation lookup
+- call hierarchy
+- type hierarchy
+- project overview
+- entrypoint discovery
+- DI registration tracing
+- one-shot symbol analysis
+- production-to-test mapping
+- dead code candidate detection
+
+### XAML tools
+
+- XAML validation
+- binding extraction
+- resource analysis
+- named element inspection
+- tree structure extraction
+- binding issue detection
+- ViewModel interface extraction
+
+## Why This MCP Surface Works Well for LLM Agents
+
+Older C# MCP servers often stop at raw LSP primitives. This project also exposes higher-level, codebase-shaped operations that reduce repeated tool calls:
+
+- `csharp_project_overview`
+- `csharp_analyze_symbol`
+- `csharp_find_entrypoints`
+- `csharp_find_registrations`
+- `csharp_semantic_search`
+- `csharp_test_map`
+- `csharp_find_dead_code_candidates`
+
+That makes it easier for an agent to answer questions like:
+
+- "How is this solution structured?"
+- "Where are the ASP.NET entrypoints?"
+- "Which implementation backs this interface?"
+- "Where is this service registered in DI?"
+- "What tests probably cover this type?"
+
+## Structured Output for Agents
+
+All current C# and XAML tools support `format`. The default is `structured`.
+
+- `structured`: pretty-printed JSON envelope for LLM parsing
+- `summary`: short text summary
+- `text` and `markdown`: compatibility aliases for `summary`
+
+Structured responses use this shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "tool": "csharp_hover",
+  "success": true,
+  "summary": "Hover information available.",
+  "data": {
+    "summary": "Hover information available."
+  },
+  "error": null
+}
+```
+
+Error responses keep the same top-level envelope:
+
+```json
+{
+  "schemaVersion": 1,
+  "tool": "csharp_hover",
+  "success": false,
+  "summary": "Workspace not initialized.",
+  "data": null,
+  "error": {
+    "code": "tool_execution_failed",
+    "message": "Workspace not initialized."
+  }
+}
+```
+
+## Requirements
+
+### 1. .NET 8 SDK
+
+Install the .NET 8 SDK from `https://dotnet.microsoft.com/download/dotnet/8.0`.
+
+### 2. `csharp-ls`
+
+The C# tools depend on `csharp-ls` being available on `PATH`.
 
 ```bash
 dotnet tool install --global csharp-ls
-```
-
-Verify installation:
-```bash
 csharp-ls --version
 ```
 
+The XAML tools do not depend on `csharp-ls`, but the C# toolchain does.
+
 ## Installation
 
-### Option 1: Build from source
+### Build from source
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/HYMMA/csharp-lsp-mcp.git
 cd csharp-lsp-mcp
 dotnet build -c Release
 ```
 
-The executable will be at:
+Executable locations:
+
 - Windows: `src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.exe`
 - Linux/macOS: `src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp`
 
-### Option 2: Install as .NET tool (after publishing to NuGet)
+### Run directly with `dotnet`
 
 ```bash
-dotnet tool install --global csharp-lsp-mcp
+dotnet run --project src/CSharpLspMcp
 ```
 
-## Configuration with Claude
+### MCP client configuration
 
-Add to your Claude Desktop configuration (`claude_desktop_config.json`):
-
-### Windows
-
-```json
-{
-  "mcpServers": {
-    "csharp": {
-      "command": "C:\\path\\to\\csharp-lsp-mcp.exe"
-    }
-  }
-}
-```
-
-### macOS/Linux
-
-```json
-{
-  "mcpServers": {
-    "csharp": {
-      "command": "/path/to/csharp-lsp-mcp"
-    }
-  }
-}
-```
-
-### Using dotnet run
+Example MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "csharp": {
       "command": "dotnet",
-      "args": ["run", "--project", "/path/to/csharp-lsp-mcp/src/CSharpLspMcp"]
+      "args": [
+        "run",
+        "--project",
+        "/absolute/path/to/csharp-lsp-mcp/src/CSharpLspMcp"
+      ]
     }
   }
 }
 ```
 
-## Available Tools
+If you publish or install the binary separately, point the MCP client to `csharp-lsp-mcp` directly:
 
-### C# Tools (via csharp-ls)
+```json
+{
+  "mcpServers": {
+    "csharp": {
+      "command": "csharp-lsp-mcp"
+    }
+  }
+}
+```
+
+## Common Parameter Conventions
+
+These conventions apply across the C# MCP surface:
+
+- `filePath`: usually an absolute path to a `.cs` file; some higher-level tools also accept a workspace-relative path
+- `line`: 0-based line number
+- `character`: 0-based character position
+- `content`: optional unsaved file content; if omitted, tools read from disk; some analyzers also treat empty content as a disk fallback
+- `format`: `structured` by default, `summary` for compact human-readable output
+- `maxResults`, `maxDocuments`, `maxDiagnosticsPerDocument`: hard caps for agent context control
+
+Important workflow rule:
+
+- call `csharp_set_workspace` before using the C# tools
+
+## Quick Start
+
+1. Initialize the workspace:
+
+```json
+{
+  "path": "/path/to/solution-root"
+}
+```
+
+Call with `csharp_set_workspace`.
+
+2. Inspect the solution:
+
+```json
+{
+  "maxProjects": 25,
+  "format": "structured"
+}
+```
+
+Call with `csharp_project_overview`.
+
+3. Analyze a symbol:
+
+```json
+{
+  "symbolQuery": "MyCompany.Feature.ServiceBusListener",
+  "maxResults": 10,
+  "format": "structured"
+}
+```
+
+Call with `csharp_analyze_symbol`.
+
+## Full Tool Reference
+
+## Workspace Tools
 
 ### `csharp_set_workspace`
 
-Set the workspace directory (solution or project folder). Call this first!
+Sets the current solution or project directory and starts the C# language server.
 
-```json
-{
-  "path": "/path/to/your/solution"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `string` | Yes | Path to the solution or project directory. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_stop`
+
+Stops the C# language server and releases file locks.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_workspace_diagnostics`
+
+Returns pull diagnostics across the current workspace.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `maxDocuments` | `int` | No | Maximum number of documents to include. Default: `20`. |
+| `maxDiagnosticsPerDocument` | `int` | No | Maximum diagnostics to include per document. Default: `10`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+## Document Tools
 
 ### `csharp_diagnostics`
 
-Get compiler errors and warnings for a C# file.
+Returns compiler diagnostics for one C# document.
 
-```json
-{
-  "filePath": "/path/to/File.cs",
-  "content": "optional - file content if not on disk"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `content` | `string?` | No | Optional file content. Reads from disk when omitted. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `csharp_hover`
 
-Get type information at a specific position.
+Returns type information and documentation at a position.
 
-```json
-{
-  "filePath": "/path/to/File.cs",
-  "line": 10,
-  "character": 15
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `line` | `int` | Yes | 0-based line number. |
+| `character` | `int` | Yes | 0-based character position. |
+| `content` | `string?` | No | Optional file content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `csharp_completions`
 
-Get IntelliSense completions.
+Returns IntelliSense completions at a position.
 
-```json
-{
-  "filePath": "/path/to/File.cs",
-  "line": 10,
-  "character": 15,
-  "maxResults": 20
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `line` | `int` | Yes | 0-based line number. |
+| `character` | `int` | Yes | 0-based character position. |
+| `content` | `string?` | No | Optional file content. |
+| `maxResults` | `int` | No | Maximum completion items. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `csharp_definition`
 
-Find where a symbol is defined.
+Finds the definition of the symbol at a position.
 
-```json
-{
-  "filePath": "/path/to/File.cs",
-  "line": 10,
-  "character": 15
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `line` | `int` | Yes | 0-based line number. |
+| `character` | `int` | Yes | 0-based character position. |
+| `content` | `string?` | No | Optional file content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `csharp_references`
 
-Find all references to a symbol.
+Finds references to the symbol at a position.
 
-```json
-{
-  "filePath": "/path/to/File.cs",
-  "line": 10,
-  "character": 15,
-  "includeDeclaration": true
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `line` | `int` | Yes | 0-based line number. |
+| `character` | `int` | Yes | 0-based character position. |
+| `content` | `string?` | No | Optional file content. |
+| `includeDeclaration` | `bool` | No | Include the declaration in results. Default: `true`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `csharp_symbols`
 
-Get all symbols in a document.
+Lists document symbols for a single C# file.
 
-```json
-{
-  "filePath": "/path/to/File.cs"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `content` | `string?` | No | Optional file content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `csharp_code_actions`
 
-Get available quick fixes and refactorings.
+Returns available quick fixes and refactorings for a selected range.
 
-```json
-{
-  "filePath": "/path/to/File.cs",
-  "startLine": 10,
-  "startCharacter": 0,
-  "endLine": 10,
-  "endCharacter": 20
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `startLine` | `int` | Yes | 0-based start line. |
+| `startCharacter` | `int` | Yes | 0-based start character. |
+| `endLine` | `int` | Yes | 0-based end line. |
+| `endCharacter` | `int` | Yes | 0-based end character. |
+| `content` | `string?` | No | Optional file content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `csharp_rename`
 
-Preview a symbol rename across the workspace.
+Returns a rename plan for the symbol at a position.
 
-```json
-{
-  "filePath": "/path/to/File.cs",
-  "line": 10,
-  "character": 15,
-  "newName": "NewSymbolName"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `line` | `int` | Yes | 0-based line number. |
+| `character` | `int` | Yes | 0-based character position. |
+| `newName` | `string` | Yes | New symbol name. |
+| `content` | `string?` | No | Optional file content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
----
+## Search and Hierarchy Tools
+
+### `csharp_search_symbols`
+
+Searches symbols across the current workspace by name.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `query` | `string` | Yes | Symbol-name query. Can be empty to inspect top-ranked results. |
+| `maxResults` | `int` | No | Maximum number of results. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_semantic_search`
+
+Runs named semantic searches across the current workspace.
+
+Supported `query` values:
+
+- `aspnet_endpoints`
+- `hosted_services`
+- `di_registrations`
+- `config_bindings`
+- `middleware_pipeline`
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `query` | `string` | Yes | Named search mode. |
+| `projectFilter` | `string?` | No | Optional project name or path fragment filter. |
+| `includeTests` | `bool` | No | Include results from test code. Default: `false`. |
+| `maxResults` | `int` | No | Maximum number of matches. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_find_implementations`
+
+Finds implementations of the symbol at a given position.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `line` | `int` | Yes | 0-based line number. |
+| `character` | `int` | Yes | 0-based character position. |
+| `content` | `string?` | No | Optional file content. |
+| `maxResults` | `int` | No | Maximum implementation results. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_call_hierarchy`
+
+Returns incoming and outgoing calls for the symbol at a position.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `line` | `int` | Yes | 0-based line number. |
+| `character` | `int` | Yes | 0-based character position. |
+| `content` | `string?` | No | Optional file content. |
+| `maxResults` | `int` | No | Maximum incoming and outgoing items per side. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_type_hierarchy`
+
+Returns immediate supertypes and subtypes for a type.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Absolute path to the C# file. |
+| `line` | `int` | Yes | 0-based line number. |
+| `character` | `int` | Yes | 0-based character position. |
+| `content` | `string?` | No | Optional file content. |
+| `maxResults` | `int` | No | Maximum supertype and subtype items. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+## Architecture and Analysis Tools
+
+### `csharp_project_overview`
+
+Summarizes the current .NET workspace at the solution and project level.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `maxProjects` | `int` | No | Maximum number of projects to include in detail. Default: `25`. |
+| `maxPackagesPerProject` | `int` | No | Maximum package references to show per project. Default: `8`. |
+| `maxProjectReferencesPerProject` | `int` | No | Maximum project references to show per project. Default: `8`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_find_entrypoints`
+
+Finds host projects, startup surfaces, middleware, routes, and hosted services.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `includeAspNetRoutes` | `bool` | No | Include direct ASP.NET route registrations such as `MapGet` and `MapPost`. Default: `true`. |
+| `includeHostedServices` | `bool` | No | Include `AddHostedService` registrations and `BackgroundService` implementations. Default: `true`. |
+| `includeMiddlewarePipeline` | `bool` | No | Include middleware calls such as `UseAuthentication`. Default: `true`. |
+| `maxResults` | `int` | No | Maximum items per section. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_find_registrations`
+
+Traces dependency injection registrations and likely consumers.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `query` | `string?` | No | Optional filter by service type, implementation type, or registration text. |
+| `includeConsumers` | `bool` | No | Include likely constructor consumers. Default: `true`. |
+| `maxResults` | `int` | No | Maximum registrations and consumers per section. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_analyze_symbol`
+
+Builds a one-shot symbol report from multiple lower-level analyzers.
+
+Use either `symbolQuery`, or `filePath` with `line` and `character`.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `symbolQuery` | `string?` | No | Workspace symbol query or fully qualified name. |
+| `filePath` | `string?` | No | Absolute or workspace-relative file path. Required for position-based analysis. |
+| `line` | `int` | No | 0-based line number. Use with `filePath` and `character`. Default: `-1`. |
+| `character` | `int` | No | 0-based character position. Use with `filePath` and `line`. Default: `-1`. |
+| `content` | `string?` | No | Optional file content. Reads from disk when null or empty. |
+| `maxResults` | `int` | No | Maximum references and hierarchy edges to include. Default: `10`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_test_map`
+
+Maps production code to likely related tests.
+
+Provide `filePath`, `symbolQuery`, or both.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string?` | No | Absolute or workspace-relative path to a production C# file. |
+| `symbolQuery` | `string?` | No | Symbol name or fully qualified member/type name. |
+| `maxResults` | `int` | No | Maximum related tests to return. Default: `10`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_find_dead_code_candidates`
+
+Finds best-effort dead code candidates in the current workspace.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `includePrivateMembers` | `bool` | No | Include unused private methods and fields. Default: `true`. |
+| `includeInternalTypes` | `bool` | No | Include unreferenced internal types. Default: `true`. |
+| `includeTests` | `bool` | No | Include candidates from test projects and test paths. Default: `false`. |
+| `maxResults` | `int` | No | Maximum candidates to return. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ## XAML Tools
 
 ### `xaml_validate`
 
-Validate a XAML file for errors, warnings, and common issues.
+Validates a XAML file and returns parse and semantic diagnostics.
 
-```json
-{
-  "filePath": "/path/to/MainWindow.xaml",
-  "projectPath": "/path/to/project"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Path to the XAML file. |
+| `content` | `string?` | No | Optional XAML content. Reads from disk when omitted. |
+| `projectPath` | `string?` | No | Optional project path for assembly-aware validation. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `xaml_bindings`
 
-Extract and analyze all data bindings in a XAML file.
+Extracts data bindings from a XAML file.
 
-```json
-{
-  "filePath": "/path/to/MainWindow.xaml"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Path to the XAML file. |
+| `content` | `string?` | No | Optional XAML content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `xaml_resources`
 
-List all resources and check for unused or missing references.
+Lists resource definitions and references in a XAML file.
 
-```json
-{
-  "filePath": "/path/to/MainWindow.xaml"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Path to the XAML file. |
+| `content` | `string?` | No | Optional XAML content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `xaml_names`
 
-List all x:Name declarations and check for duplicates.
+Lists all named elements and duplicate `x:Name` values.
 
-```json
-{
-  "filePath": "/path/to/MainWindow.xaml"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Path to the XAML file. |
+| `content` | `string?` | No | Optional XAML content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `xaml_structure`
 
-Show the element tree structure of a XAML file.
+Builds a simplified XAML element tree.
 
-```json
-{
-  "filePath": "/path/to/MainWindow.xaml",
-  "maxDepth": 5
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Path to the XAML file. |
+| `content` | `string?` | No | Optional XAML content. |
+| `maxDepth` | `int` | No | Maximum tree depth to include. Default: `10`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `xaml_find_binding_errors`
 
-Find potential binding errors like invalid ElementName references.
+Finds likely binding issues in a XAML file.
 
-```json
-{
-  "filePath": "/path/to/MainWindow.xaml"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Path to the XAML file. |
+| `content` | `string?` | No | Optional XAML content. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
 ### `xaml_extract_viewmodel`
 
-Generate a C# interface based on the bindings in XAML.
+Generates a ViewModel interface from inferred binding properties.
 
-```json
-{
-  "filePath": "/path/to/MainWindow.xaml",
-  "interfaceName": "IMainViewModel"
-}
-```
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filePath` | `string` | Yes | Path to the XAML file. |
+| `content` | `string?` | No | Optional XAML content. |
+| `interfaceName` | `string` | No | Generated interface name. Default: `IViewModel`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
 
-## Usage Examples
+## Example C# MCP Workflows
 
-### Example conversation with Claude:
+### Understand a new .NET solution
 
-**You:** I'm working on a C# project at `/home/user/MyProject`. Can you check my Program.cs for errors?
+1. `csharp_set_workspace`
+2. `csharp_project_overview`
+3. `csharp_find_entrypoints`
+4. `csharp_find_registrations`
 
-**Claude:** *Uses `csharp_set_workspace` and `csharp_diagnostics`*
+### Analyze one service or controller
 
-Let me analyze your code... I found 2 issues:
+1. `csharp_search_symbols`
+2. `csharp_analyze_symbol`
+3. `csharp_call_hierarchy`
+4. `csharp_find_implementations`
+5. `csharp_test_map`
 
-1. **ERROR** Line 15, Col 10: 'MyClass' does not contain a definition for 'Foo'
-2. **WARNING** Line 22, Col 5: Variable 'x' is declared but never used
+### Audit a codebase for cleanup
 
----
+1. `csharp_workspace_diagnostics`
+2. `csharp_find_dead_code_candidates`
+3. `csharp_semantic_search`
 
-**You:** What's the type of the variable on line 15?
+## Notes and Limitations
 
-**Claude:** *Uses `csharp_hover`*
+- The C# analysis path depends on `csharp-ls`, so its capabilities and quirks affect the low-level editor-style tools.
+- Higher-level tools such as DI tracing, semantic search, test mapping, and dead-code detection are intentionally heuristic. They are designed to be useful for agents, not to act as a full formal static-analysis platform.
+- `csharp_set_workspace` should be called before other C# tools so the language server can load the solution correctly.
 
-The variable `result` is of type `Task<IEnumerable<Customer>>` - it's an async task that returns a collection of Customer objects.
+## Development
 
-## Running Tests
+Build:
 
 ```bash
-cd csharp-lsp-mcp
+dotnet build
+```
+
+Run tests:
+
+```bash
 dotnet test
 ```
 
-## Debugging
-
-Enable verbose logging:
+Verbose server logging:
 
 ```bash
-csharp-lsp-mcp --verbose
+dotnet run --project src/CSharpLspMcp -- --verbose
 ```
-
-Or set environment variable:
-```bash
-export MCP_DEBUG=1
-csharp-lsp-mcp
-```
-
-Logs are written to stderr to avoid interfering with the MCP protocol on stdout.
-
-## Architecture
-
-```
-┌─────────────┐     MCP Protocol      ┌──────────────┐     LSP Protocol     ┌────────────┐
-│   Claude    │◄──────────────────────►│  csharp-lsp  │◄────────────────────►│  csharp-ls │
-│             │        (stdio)         │     -mcp     │       (stdio)        │            │
-└─────────────┘                        └──────────────┘                      └────────────┘
-                                              │
-                                              ▼
-                                       ┌──────────────┐
-                                       │  Your C#     │
-                                       │  Project     │
-                                       └──────────────┘
-```
-
-## Project Structure
-
-```
-csharp-lsp-mcp/
-├── CSharpLspMcp.sln
-├── README.md
-└── src/
-    ├── CSharpLspMcp/
-    │   ├── CSharpLspMcp.csproj
-    │   ├── Program.cs
-    │   ├── Lsp/
-    │   │   ├── LspClient.cs        # LSP client implementation
-    │   │   └── LspTypes.cs         # LSP protocol types
-    │   ├── Mcp/
-    │   │   ├── McpServer.cs        # MCP server implementation
-    │   │   └── McpTypes.cs         # MCP protocol types
-    │   └── Tools/
-    │       └── CSharpLspToolHandler.cs  # Tool implementations
-    └── CSharpLspMcp.Tests/
-        ├── CSharpLspMcp.Tests.csproj
-        ├── McpServerTests.cs
-        ├── LspTypesTests.cs
-        └── ToolHandlerTests.cs
-```
-
-## Troubleshooting
-
-### "Could not find csharp-ls"
-
-Make sure `csharp-ls` is installed and in your PATH:
-```bash
-dotnet tool install --global csharp-ls
-```
-
-On Windows, you may need to restart your terminal or add `%USERPROFILE%\.dotnet\tools` to your PATH.
-
-### "LSP initialization failed"
-
-- Ensure your workspace contains a `.sln` or `.csproj` file
-- Try running `dotnet restore` in your project directory
-- Check that your project targets a supported .NET version
-
-### No diagnostics appearing
-
-- The LSP server needs time to analyze your project
-- Large solutions may take longer to initialize
-- Try calling `csharp_set_workspace` first, then wait a moment before requesting diagnostics
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Acknowledgments
-
-- [csharp-ls](https://github.com/razzmatazz/csharp-language-server) - The C# language server this project uses
-- [Model Context Protocol](https://modelcontextprotocol.io/) - The protocol specification
-- [Anthropic](https://www.anthropic.com/) - Creators of Claude and MCP
+MIT. See [LICENSE](LICENSE).

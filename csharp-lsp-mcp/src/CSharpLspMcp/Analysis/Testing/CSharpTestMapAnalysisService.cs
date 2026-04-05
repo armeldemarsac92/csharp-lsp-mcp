@@ -1,5 +1,5 @@
-using System.Text;
 using System.Text.RegularExpressions;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Workspace;
 
 namespace CSharpLspMcp.Analysis.Testing;
@@ -21,7 +21,7 @@ public sealed class CSharpTestMapAnalysisService
         _workspaceState = workspaceState;
     }
 
-    public Task<string> GetTestMapAsync(
+    public Task<TestMapResponse> GetTestMapAsync(
         string? filePath,
         string? symbolQuery,
         int maxResults,
@@ -29,14 +29,14 @@ public sealed class CSharpTestMapAnalysisService
     {
         var workspacePath = _workspaceState.CurrentPath;
         if (string.IsNullOrWhiteSpace(workspacePath))
-            return Task.FromResult("Error: Workspace is not set. Call csharp_set_workspace first.");
+            throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         cancellationToken.ThrowIfCancellationRequested();
 
         var effectiveMaxResults = Math.Max(1, maxResults);
         var target = ResolveTarget(filePath, symbolQuery);
         if (target == null)
-            return Task.FromResult("Error: Provide either filePath or symbolQuery.");
+            throw new InvalidOperationException("Provide either filePath or symbolQuery.");
 
         var relatedTests = FindRelatedTests(workspacePath, target, cancellationToken)
             .OrderByDescending(match => match.Score)
@@ -46,31 +46,34 @@ public sealed class CSharpTestMapAnalysisService
         if (relatedTests.Length == 0)
         {
             return Task.FromResult(
-                $"No related tests found for {target.DisplayName}. Checked test files under {Path.Combine(workspacePath, "tests")}.");
+                new TestMapResponse(
+                    Summary: $"No related tests found for {target.DisplayName}.",
+                    SolutionRoot: workspacePath,
+                    Target: target.DisplayName,
+                    CandidateNames: target.CandidateNames,
+                    TotalMatches: 0,
+                    Matches: Array.Empty<TestMapMatchItem>(),
+                    TruncatedMatches: 0));
         }
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"Target: {target.DisplayName}");
-        sb.AppendLine($"Candidates: {string.Join(", ", target.CandidateNames)}");
-        sb.AppendLine();
-        sb.AppendLine($"Related tests ({relatedTests.Length}):");
-
-        foreach (var match in relatedTests.Take(effectiveMaxResults))
-        {
-            sb.AppendLine($"• {match.RelativePath} [score: {match.Score}]");
-            sb.AppendLine($"  Reasons: {string.Join(", ", match.Reasons)}");
-
-            foreach (var lineMatch in match.LineMatches.Take(3))
-                sb.AppendLine($"  Line {lineMatch.LineNumber}: {lineMatch.Text}");
-
-            if (match.LineMatches.Length > 3)
-                sb.AppendLine($"  ... and {match.LineMatches.Length - 3} more line match(es)");
-        }
-
-        if (relatedTests.Length > effectiveMaxResults)
-            sb.AppendLine($"... and {relatedTests.Length - effectiveMaxResults} more");
-
-        return Task.FromResult(sb.ToString().TrimEnd());
+        return Task.FromResult(
+            new TestMapResponse(
+                Summary: $"Found {relatedTests.Length} related test candidate(s) for {target.DisplayName}.",
+                SolutionRoot: workspacePath,
+                Target: target.DisplayName,
+                CandidateNames: target.CandidateNames,
+                TotalMatches: relatedTests.Length,
+                Matches: relatedTests.Take(effectiveMaxResults)
+                    .Select(match => new TestMapMatchItem(
+                        match.RelativePath,
+                        match.Score,
+                        match.Reasons,
+                        match.LineMatches.Take(3)
+                            .Select(lineMatch => new TestLineMatchItem(lineMatch.LineNumber, lineMatch.Text))
+                            .ToArray(),
+                        Math.Max(0, match.LineMatches.Length - 3)))
+                    .ToArray(),
+                TruncatedMatches: Math.Max(0, relatedTests.Length - effectiveMaxResults)));
     }
 
     private TargetInfo? ResolveTarget(string? filePath, string? symbolQuery)
@@ -220,6 +223,26 @@ public sealed class CSharpTestMapAnalysisService
         LineMatch[] LineMatches);
 
     private sealed record LineMatch(
+        int LineNumber,
+        string Text);
+
+    public sealed record TestMapResponse(
+        string Summary,
+        string SolutionRoot,
+        string Target,
+        string[] CandidateNames,
+        int TotalMatches,
+        TestMapMatchItem[] Matches,
+        int TruncatedMatches) : IStructuredToolResult;
+
+    public sealed record TestMapMatchItem(
+        string RelativePath,
+        int Score,
+        string[] Reasons,
+        TestLineMatchItem[] LineMatches,
+        int TruncatedLineMatches);
+
+    public sealed record TestLineMatchItem(
         int LineNumber,
         string Text);
 }

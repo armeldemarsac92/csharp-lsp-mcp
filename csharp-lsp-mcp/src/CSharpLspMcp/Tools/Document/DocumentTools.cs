@@ -23,11 +23,13 @@ public sealed class DocumentTools : CSharpToolBase
     [Description("Get compiler errors and warnings for C# code. Opens the document in the LSP if not already open.")]
     public Task<string> GetDiagnosticsAsync(
         [Description("Absolute path to the C# file")] string filePath,
-        [Description("Content of the file (optional, reads from disk if not provided)")] string? content,
-        CancellationToken cancellationToken)
-        => ExecuteToolAsync(
+        [Description("Content of the file (optional, reads from disk if not provided)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_diagnostics",
+            format,
             ct => _documentAnalysisService.GetDiagnosticsAsync(filePath, content, ct),
             cancellationToken);
 
@@ -37,11 +39,13 @@ public sealed class DocumentTools : CSharpToolBase
         [Description("Absolute path to the C# file")] string filePath,
         [Description("0-based line number")] int line,
         [Description("0-based character position")] int character,
-        [Description("Content of the file (optional)")] string? content,
-        CancellationToken cancellationToken)
-        => ExecuteToolAsync(
+        [Description("Content of the file (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_hover",
+            format,
             ct => _documentAnalysisService.GetHoverAsync(filePath, line, character, content, ct),
             cancellationToken);
 
@@ -51,12 +55,14 @@ public sealed class DocumentTools : CSharpToolBase
         [Description("Absolute path to the C# file")] string filePath,
         [Description("0-based line number")] int line,
         [Description("0-based character position")] int character,
-        [Description("Content of the file (optional)")] string? content,
+        [Description("Content of the file (optional)")] string? content = null,
         [Description("Maximum number of completions to return (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_completions",
+            format,
             ct => _documentAnalysisService.GetCompletionsAsync(filePath, line, character, content, maxResults, ct),
             cancellationToken);
 
@@ -66,11 +72,13 @@ public sealed class DocumentTools : CSharpToolBase
         [Description("Absolute path to the C# file")] string filePath,
         [Description("0-based line number")] int line,
         [Description("0-based character position")] int character,
-        [Description("Content of the file (optional)")] string? content,
-        CancellationToken cancellationToken)
-        => ExecuteToolAsync(
+        [Description("Content of the file (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_definition",
+            format,
             ct => _documentAnalysisService.GetDefinitionAsync(filePath, line, character, content, ct),
             cancellationToken);
 
@@ -80,12 +88,14 @@ public sealed class DocumentTools : CSharpToolBase
         [Description("Absolute path to the C# file")] string filePath,
         [Description("0-based line number")] int line,
         [Description("0-based character position")] int character,
-        [Description("Content of the file (optional)")] string? content,
+        [Description("Content of the file (optional)")] string? content = null,
         [Description("Include the declaration in results (default: true)")] bool includeDeclaration = true,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_references",
+            format,
             ct => _documentAnalysisService.GetReferencesAsync(filePath, line, character, content, includeDeclaration, ct),
             cancellationToken);
 
@@ -93,11 +103,13 @@ public sealed class DocumentTools : CSharpToolBase
     [Description("Get all symbols (classes, methods, properties, etc.) in a document")]
     public Task<string> GetSymbolsAsync(
         [Description("Absolute path to the C# file")] string filePath,
-        [Description("Content of the file (optional)")] string? content,
-        CancellationToken cancellationToken)
-        => ExecuteToolAsync(
+        [Description("Content of the file (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_symbols",
+            format,
             ct => _documentAnalysisService.GetSymbolsAsync(filePath, content, ct),
             cancellationToken);
 
@@ -109,11 +121,13 @@ public sealed class DocumentTools : CSharpToolBase
         [Description("0-based start character")] int startCharacter,
         [Description("0-based end line")] int endLine,
         [Description("0-based end character")] int endCharacter,
-        [Description("Content of the file (optional)")] string? content,
-        CancellationToken cancellationToken)
-        => ExecuteToolAsync(
+        [Description("Content of the file (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_code_actions",
+            format,
             ct => _documentAnalysisService.GetCodeActionsAsync(
                 filePath,
                 startLine,
@@ -131,11 +145,13 @@ public sealed class DocumentTools : CSharpToolBase
         [Description("0-based line number")] int line,
         [Description("0-based character position")] int character,
         [Description("The new name for the symbol")] string newName,
-        [Description("Content of the file (optional)")] string? content,
-        CancellationToken cancellationToken)
-        => ExecuteToolAsync(
+        [Description("Content of the file (optional)")] string? content = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_rename",
+            format,
             ct => _documentAnalysisService.RenameAsync(filePath, line, character, newName, content, ct),
             cancellationToken);
 }

@@ -36,10 +36,12 @@ public sealed class AnalysisTools : CSharpToolBase
         [Description("0-based character position for the symbol position. Use with filePath and line.")] int character = -1,
         [Description("Content of the file (optional, reads from disk when null or empty).")] string? content = null,
         [Description("Maximum number of references and hierarchy edges to include (default: 10)")] int maxResults = 10,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_analyze_symbol",
+            format,
             ct => _symbolAnalysisService.AnalyzeSymbolAsync(
                 symbolQuery,
                 filePath,
@@ -56,10 +58,12 @@ public sealed class AnalysisTools : CSharpToolBase
         [Description("Absolute or workspace-relative path to the production C# file.")] string? filePath = null,
         [Description("Optional symbol name or fully qualified type/member name to map to tests.")] string? symbolQuery = null,
         [Description("Maximum number of related tests to return (default: 10)")] int maxResults = 10,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_test_map",
+            format,
             ct => _testMapAnalysisService.GetTestMapAsync(
                 filePath,
                 symbolQuery,
@@ -74,10 +78,12 @@ public sealed class AnalysisTools : CSharpToolBase
         [Description("Include unreferenced internal types (default: true)")] bool includeInternalTypes = true,
         [Description("Include candidates from test projects and test paths (default: false)")] bool includeTests = false,
         [Description("Maximum number of candidates to return (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_find_dead_code_candidates",
+            format,
             ct => _deadCodeAnalysisService.FindDeadCodeCandidatesAsync(
                 includePrivateMembers,
                 includeInternalTypes,

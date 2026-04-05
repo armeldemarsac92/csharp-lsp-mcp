@@ -1,5 +1,5 @@
-using System.Text;
 using System.Xml.Linq;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Workspace;
 
 namespace CSharpLspMcp.Analysis.Architecture;
@@ -14,7 +14,7 @@ public sealed class CSharpProjectOverviewAnalysisService
         _workspaceState = workspaceState;
     }
 
-    public Task<string> GetProjectOverviewAsync(
+    public Task<ProjectOverviewResponse> GetProjectOverviewAsync(
         int maxProjects,
         int maxPackagesPerProject,
         int maxProjectReferencesPerProject,
@@ -22,7 +22,7 @@ public sealed class CSharpProjectOverviewAnalysisService
     {
         var workspacePath = _workspaceState.CurrentPath;
         if (string.IsNullOrWhiteSpace(workspacePath))
-            return Task.FromResult("Error: Workspace is not set. Call csharp_set_workspace first.");
+            throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -40,91 +40,76 @@ public sealed class CSharpProjectOverviewAnalysisService
             .ToArray();
 
         if (projects.Length == 0)
-            return Task.FromResult($"No C# project files were found under {workspacePath}.");
+            return Task.FromResult(
+                new ProjectOverviewResponse(
+                    Summary: $"No C# project files were found under {workspacePath}.",
+                    SolutionRoot: workspacePath,
+                    SolutionFiles: solutionFiles.Select(path => Path.GetRelativePath(workspacePath, path)).ToArray(),
+                    TotalProjects: 0,
+                    Projects: Array.Empty<ProjectOverviewItem>(),
+                    TestProjects: Array.Empty<string>(),
+                    EntrypointProjects: Array.Empty<string>(),
+                    ProjectGraph: Array.Empty<ProjectGraphEdge>(),
+                    SuggestedCommands: Array.Empty<string>(),
+                    TruncatedProjects: 0));
 
         var testProjects = projects.Where(project => project.IsTestProject).ToArray();
         var entryPointProjects = projects.Where(project => project.EntrypointFiles.Length > 0).ToArray();
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"Solution root: {workspacePath}");
-
-        if (solutionFiles.Length > 0)
-        {
-            sb.AppendLine($"Solutions ({solutionFiles.Length}):");
-            foreach (var solutionFile in solutionFiles)
-                sb.AppendLine($"• {Path.GetRelativePath(workspacePath, solutionFile)}");
-            sb.AppendLine();
-        }
-
-        sb.AppendLine($"Projects ({projects.Length}):");
-        foreach (var project in projects.Take(maxProjects))
-        {
-            sb.AppendLine($"• {project.Name} [{project.ProjectType}]");
-            sb.AppendLine($"  Path: {project.RelativePath}");
-            sb.AppendLine($"  Frameworks: {FormatList(project.TargetFrameworks, "unknown")}");
-            sb.AppendLine($"  Nullable: {project.Nullable}, ImplicitUsings: {project.ImplicitUsings}");
-
-            if (!string.IsNullOrWhiteSpace(project.OutputType))
-                sb.AppendLine($"  OutputType: {project.OutputType}");
-
-            if (project.EntrypointFiles.Length > 0)
-                sb.AppendLine($"  Entrypoints: {FormatList(project.EntrypointFiles)}");
-
-            if (project.ProjectReferences.Length > 0)
-            {
-                sb.AppendLine(
-                    $"  Project refs: {FormatList(project.ProjectReferences.Take(maxProjectReferencesPerProject))}");
-                if (project.ProjectReferences.Length > maxProjectReferencesPerProject)
-                    sb.AppendLine($"  ... and {project.ProjectReferences.Length - maxProjectReferencesPerProject} more project reference(s)");
-            }
-
-            if (project.PackageReferences.Length > 0)
-            {
-                sb.AppendLine(
-                    $"  Packages: {FormatList(project.PackageReferences.Take(maxPackagesPerProject))}");
-                if (project.PackageReferences.Length > maxPackagesPerProject)
-                    sb.AppendLine($"  ... and {project.PackageReferences.Length - maxPackagesPerProject} more package reference(s)");
-            }
-        }
-
-        if (projects.Length > maxProjects)
-            sb.AppendLine($"\n... and {projects.Length - maxProjects} more project(s)");
-
-        sb.AppendLine();
-        sb.AppendLine($"Test projects ({testProjects.Length}): {FormatList(testProjects.Select(project => project.Name), "none")}");
-        sb.AppendLine($"Entrypoint projects ({entryPointProjects.Length}): {FormatList(entryPointProjects.Select(project => project.Name), "none")}");
-
         var graphLines = projects
             .Where(project => project.ProjectReferences.Length > 0)
-            .Select(project => $"• {project.Name} -> {FormatList(project.ProjectReferences.Take(maxProjectReferencesPerProject))}")
+            .Select(project => new ProjectGraphEdge(
+                project.Name,
+                project.ProjectReferences.Take(maxProjectReferencesPerProject).ToArray(),
+                Math.Max(0, project.ProjectReferences.Length - maxProjectReferencesPerProject)))
             .Take(maxProjects)
             .ToArray();
 
-        if (graphLines.Length > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine("Project graph:");
-            foreach (var graphLine in graphLines)
-                sb.AppendLine(graphLine);
-        }
-
-        sb.AppendLine();
-        sb.AppendLine("Suggested commands:");
+        var suggestedCommands = new List<string>();
         if (solutionFiles.Length > 0)
         {
             var primarySolution = Path.GetRelativePath(workspacePath, solutionFiles[0]);
-            sb.AppendLine($"• dotnet build {primarySolution}");
+            suggestedCommands.Add($"dotnet build {primarySolution}");
             if (testProjects.Length > 0)
-                sb.AppendLine($"• dotnet test {primarySolution}");
+                suggestedCommands.Add($"dotnet test {primarySolution}");
         }
         else
         {
-            sb.AppendLine($"• dotnet build {projects[0].RelativePath}");
+            suggestedCommands.Add($"dotnet build {projects[0].RelativePath}");
             if (testProjects.Length > 0)
-                sb.AppendLine("• dotnet test <test-project.csproj>");
+                suggestedCommands.Add("dotnet test <test-project.csproj>");
         }
 
-        return Task.FromResult(sb.ToString());
+        var visibleProjects = projects
+            .Take(maxProjects)
+            .Select(project => new ProjectOverviewItem(
+                project.Name,
+                project.RelativePath,
+                project.ProjectType,
+                project.TargetFrameworks,
+                project.OutputType,
+                project.Nullable,
+                project.ImplicitUsings,
+                project.IsTestProject,
+                project.EntrypointFiles,
+                project.ProjectReferences.Take(maxProjectReferencesPerProject).ToArray(),
+                Math.Max(0, project.ProjectReferences.Length - maxProjectReferencesPerProject),
+                project.PackageReferences.Take(maxPackagesPerProject).ToArray(),
+                Math.Max(0, project.PackageReferences.Length - maxPackagesPerProject)))
+            .ToArray();
+
+        return Task.FromResult(
+            new ProjectOverviewResponse(
+                Summary: $"Found {projects.Length} project(s), {testProjects.Length} test project(s), and {entryPointProjects.Length} entrypoint project(s).",
+                SolutionRoot: workspacePath,
+                SolutionFiles: solutionFiles.Select(path => Path.GetRelativePath(workspacePath, path)).ToArray(),
+                TotalProjects: projects.Length,
+                Projects: visibleProjects,
+                TestProjects: testProjects.Select(project => project.Name).ToArray(),
+                EntrypointProjects: entryPointProjects.Select(project => project.Name).ToArray(),
+                ProjectGraph: graphLines,
+                SuggestedCommands: suggestedCommands.ToArray(),
+                TruncatedProjects: Math.Max(0, projects.Length - maxProjects)));
     }
 
     private static ProjectOverview ParseProject(string projectPath, string workspacePath)
@@ -279,14 +264,6 @@ public sealed class CSharpProjectOverviewAnalysisService
         return "classlib";
     }
 
-    private static string FormatList(IEnumerable<string> values, string fallback = "none")
-    {
-        var materializedValues = values.ToArray();
-        return materializedValues.Length == 0
-            ? fallback
-            : string.Join(", ", materializedValues);
-    }
-
     private sealed record ProjectOverview(
         string Name,
         string RelativePath,
@@ -299,4 +276,36 @@ public sealed class CSharpProjectOverviewAnalysisService
         string[] PackageReferences,
         string[] ProjectReferences,
         string[] EntrypointFiles);
+
+    public sealed record ProjectOverviewResponse(
+        string Summary,
+        string SolutionRoot,
+        string[] SolutionFiles,
+        int TotalProjects,
+        ProjectOverviewItem[] Projects,
+        string[] TestProjects,
+        string[] EntrypointProjects,
+        ProjectGraphEdge[] ProjectGraph,
+        string[] SuggestedCommands,
+        int TruncatedProjects) : IStructuredToolResult;
+
+    public sealed record ProjectOverviewItem(
+        string Name,
+        string Path,
+        string ProjectType,
+        string[] TargetFrameworks,
+        string OutputType,
+        string Nullable,
+        string ImplicitUsings,
+        bool IsTestProject,
+        string[] Entrypoints,
+        string[] ProjectReferences,
+        int TruncatedProjectReferences,
+        string[] PackageReferences,
+        int TruncatedPackageReferences);
+
+    public sealed record ProjectGraphEdge(
+        string Project,
+        string[] References,
+        int TruncatedReferences);
 }

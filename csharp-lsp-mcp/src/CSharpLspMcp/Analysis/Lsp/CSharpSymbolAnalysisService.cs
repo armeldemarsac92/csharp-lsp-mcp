@@ -1,4 +1,4 @@
-using System.Text;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Lsp;
 using CSharpLspMcp.Workspace;
 
@@ -17,7 +17,7 @@ public sealed class CSharpSymbolAnalysisService
         _workspaceSession = workspaceSession;
     }
 
-    public async Task<string> AnalyzeSymbolAsync(
+    public async Task<SymbolAnalysisResponse> AnalyzeSymbolAsync(
         string? symbolQuery,
         string? filePath,
         int line,
@@ -32,7 +32,7 @@ public sealed class CSharpSymbolAnalysisService
 
         if (!hasQuery && !hasPosition)
         {
-            return "Error: Provide either symbolQuery or filePath with line and character.";
+            throw new InvalidOperationException("Provide either symbolQuery or filePath with line and character.");
         }
 
         var resolvedSymbol = hasPosition
@@ -42,14 +42,52 @@ public sealed class CSharpSymbolAnalysisService
         if (resolvedSymbol == null)
         {
             return hasPosition
-                ? "No symbol could be resolved at the requested position."
-                : $"No workspace symbol matched '{symbolQuery}'.";
+                ? new SymbolAnalysisResponse(
+                    Summary: "No symbol could be resolved at the requested position.",
+                    Symbol: null,
+                    HoverText: null,
+                    Definitions: Array.Empty<LocationItem>(),
+                    TruncatedDefinitions: 0,
+                    References: Array.Empty<LocationItem>(),
+                    TruncatedReferences: 0,
+                    RelatedTests: Array.Empty<LocationItem>(),
+                    TruncatedRelatedTests: 0,
+                    Implementations: Array.Empty<HierarchyNodeItem>(),
+                    TruncatedImplementations: 0,
+                    IncomingCalls: Array.Empty<CallSiteItem>(),
+                    TruncatedIncomingCalls: 0,
+                    OutgoingCalls: Array.Empty<CallSiteItem>(),
+                    TruncatedOutgoingCalls: 0,
+                    Supertypes: Array.Empty<HierarchyNodeItem>(),
+                    TruncatedSupertypes: 0,
+                    Subtypes: Array.Empty<HierarchyNodeItem>(),
+                    TruncatedSubtypes: 0)
+                : new SymbolAnalysisResponse(
+                    Summary: $"No workspace symbol matched '{symbolQuery}'.",
+                    Symbol: null,
+                    HoverText: null,
+                    Definitions: Array.Empty<LocationItem>(),
+                    TruncatedDefinitions: 0,
+                    References: Array.Empty<LocationItem>(),
+                    TruncatedReferences: 0,
+                    RelatedTests: Array.Empty<LocationItem>(),
+                    TruncatedRelatedTests: 0,
+                    Implementations: Array.Empty<HierarchyNodeItem>(),
+                    TruncatedImplementations: 0,
+                    IncomingCalls: Array.Empty<CallSiteItem>(),
+                    TruncatedIncomingCalls: 0,
+                    OutgoingCalls: Array.Empty<CallSiteItem>(),
+                    TruncatedOutgoingCalls: 0,
+                    Supertypes: Array.Empty<HierarchyNodeItem>(),
+                    TruncatedSupertypes: 0,
+                    Subtypes: Array.Empty<HierarchyNodeItem>(),
+                    TruncatedSubtypes: 0);
         }
 
         return await BuildAnalysisAsync(resolvedSymbol, effectiveMaxResults, cancellationToken);
     }
 
-    private async Task<string> BuildAnalysisAsync(
+    private async Task<SymbolAnalysisResponse> BuildAnalysisAsync(
         ResolvedSymbol resolvedSymbol,
         int maxResults,
         CancellationToken cancellationToken)
@@ -81,35 +119,42 @@ public sealed class CSharpSymbolAnalysisService
             .Where(location => IsTestPath(new Uri(location.Uri).LocalPath))
             .ToArray();
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"Symbol: {resolvedSymbol.Name}{FormatKindSuffix(resolvedSymbol.Kind)}");
-
-        if (!string.IsNullOrWhiteSpace(resolvedSymbol.ContainerName))
-            sb.AppendLine($"Container: {resolvedSymbol.ContainerName}");
-
-        if (!string.IsNullOrWhiteSpace(resolvedSymbol.Detail))
-            sb.AppendLine($"Detail: {resolvedSymbol.Detail}");
-
-        sb.AppendLine($"Location: {FormatPath(resolvedSymbol.FilePath)}:{resolvedSymbol.Line + 1}:{resolvedSymbol.Character + 1}");
-
-        if (!string.IsNullOrWhiteSpace(resolvedSymbol.ResolutionNote))
-            sb.AppendLine($"Note: {resolvedSymbol.ResolutionNote}");
-
-        if (hover != null)
-        {
-            sb.AppendLine();
-            sb.AppendLine("Hover:");
-            sb.AppendLine(CSharpDocumentAnalysisService.FormatHoverContent(hover.Contents).TrimEnd());
-        }
-
-        AppendLocationsSection(sb, "Definitions", definitions, maxResults);
-        AppendReferencesSection(sb, references, maxResults);
-        AppendLocationsSection(sb, "Related Tests", relatedTests, maxResults);
-        AppendImplementationsSection(sb, implementations, maxResults);
-        AppendCallHierarchySection(sb, callHierarchy, maxResults);
-        AppendTypeHierarchySection(sb, typeHierarchy, maxResults);
-
-        return sb.ToString().TrimEnd();
+        return new SymbolAnalysisResponse(
+            Summary: $"Analyzed {resolvedSymbol.Name}{FormatKindSuffix(resolvedSymbol.Kind)} with {references.Length} reference(s), {implementations.Locations.Count + implementations.TypeItems.Count} implementation(s), and {relatedTests.Length} related test reference(s).",
+            Symbol: new SymbolIdentity(
+                resolvedSymbol.Name,
+                resolvedSymbol.Kind?.ToString(),
+                resolvedSymbol.Detail,
+                resolvedSymbol.ContainerName,
+                FormatPath(resolvedSymbol.FilePath),
+                resolvedSymbol.Line + 1,
+                resolvedSymbol.Character + 1,
+                resolvedSymbol.ResolutionNote),
+            HoverText: hover == null ? null : CSharpDocumentAnalysisService.FormatHoverContent(hover.Contents).TrimEnd(),
+            Definitions: definitions.Take(maxResults).Select(MapLocation).ToArray(),
+            TruncatedDefinitions: Math.Max(0, definitions.Length - maxResults),
+            References: references.Take(maxResults).Select(MapLocation).ToArray(),
+            TruncatedReferences: Math.Max(0, references.Length - maxResults),
+            RelatedTests: relatedTests.Take(maxResults).Select(MapLocation).ToArray(),
+            TruncatedRelatedTests: Math.Max(0, relatedTests.Length - maxResults),
+            Implementations: implementations.TypeItems.Count > 0
+                ? implementations.TypeItems.Take(maxResults).Select(MapTypeHierarchyItem).ToArray()
+                : implementations.Locations.Take(maxResults).Select(MapLocationAsHierarchyNode).ToArray(),
+            TruncatedImplementations: implementations.TypeItems.Count > 0
+                ? Math.Max(0, implementations.TypeItems.Count - maxResults)
+                : Math.Max(0, implementations.Locations.Count - maxResults),
+            IncomingCalls: callHierarchy.Incoming.Take(maxResults)
+                .Select(call => MapCallSite(call.From, call.FromRanges.FirstOrDefault()?.Start))
+                .ToArray(),
+            TruncatedIncomingCalls: Math.Max(0, callHierarchy.Incoming.Count - maxResults),
+            OutgoingCalls: callHierarchy.Outgoing.Take(maxResults)
+                .Select(call => MapCallSite(call.To, call.FromRanges.FirstOrDefault()?.Start))
+                .ToArray(),
+            TruncatedOutgoingCalls: Math.Max(0, callHierarchy.Outgoing.Count - maxResults),
+            Supertypes: typeHierarchy.Supertypes.Take(maxResults).Select(MapTypeHierarchyItem).ToArray(),
+            TruncatedSupertypes: Math.Max(0, typeHierarchy.Supertypes.Count - maxResults),
+            Subtypes: typeHierarchy.Subtypes.Take(maxResults).Select(MapTypeHierarchyItem).ToArray(),
+            TruncatedSubtypes: Math.Max(0, typeHierarchy.Subtypes.Count - maxResults));
     }
 
     private async Task<ResolvedSymbol?> ResolveSymbolFromPositionAsync(
@@ -298,181 +343,50 @@ public sealed class CSharpSymbolAnalysisService
         }
     }
 
-    private void AppendReferencesSection(StringBuilder sb, IReadOnlyCollection<Location> references, int maxResults)
+    private LocationItem MapLocation(Location location)
     {
-        sb.AppendLine();
-        sb.AppendLine($"References ({references.Count}):");
-
-        if (references.Count == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
-
-        var shownReferences = references.Take(maxResults).ToArray();
-        foreach (var group in shownReferences.GroupBy(location => new Uri(location.Uri).LocalPath))
-        {
-            sb.AppendLine($"• {FormatPath(group.Key)} ({group.Count()})");
-            foreach (var location in group.OrderBy(location => location.Range.Start.Line))
-                sb.AppendLine($"  Line {location.Range.Start.Line + 1}, Col {location.Range.Start.Character + 1}");
-        }
-
-        if (references.Count > shownReferences.Length)
-            sb.AppendLine($"... and {references.Count - shownReferences.Length} more");
+        var path = new Uri(location.Uri).LocalPath;
+        return new LocationItem(
+            FormatPath(path),
+            location.Range.Start.Line + 1,
+            location.Range.Start.Character + 1);
     }
 
-    private void AppendLocationsSection(
-        StringBuilder sb,
-        string title,
-        IReadOnlyCollection<Location> locations,
-        int maxResults)
-    {
-        sb.AppendLine();
-        sb.AppendLine($"{title} ({locations.Count}):");
-
-        if (locations.Count == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
-
-        foreach (var location in locations.Take(maxResults))
-        {
-            var path = new Uri(location.Uri).LocalPath;
-            sb.AppendLine($"• {FormatPath(path)}:{location.Range.Start.Line + 1}:{location.Range.Start.Character + 1}");
-        }
-
-        if (locations.Count > maxResults)
-            sb.AppendLine($"... and {locations.Count - maxResults} more");
-    }
-
-    private void AppendImplementationsSection(
-        StringBuilder sb,
-        ImplementationSummary implementations,
-        int maxResults)
-    {
-        var totalCount = implementations.Locations.Count + implementations.TypeItems.Count;
-        sb.AppendLine();
-        sb.AppendLine($"Implementations ({totalCount}):");
-
-        if (totalCount == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
-
-        if (implementations.TypeItems.Count > 0)
-        {
-            foreach (var item in implementations.TypeItems.Take(maxResults))
-            {
-                var path = new Uri(item.Uri).LocalPath;
-                sb.AppendLine($"• {item.Name} ({item.Kind})");
-                if (!string.IsNullOrWhiteSpace(item.Detail))
-                    sb.AppendLine($"  {item.Detail}");
-                sb.AppendLine($"  {FormatPath(path)}:{item.SelectionRange.Start.Line + 1}");
-            }
-
-            if (implementations.TypeItems.Count > maxResults)
-                sb.AppendLine($"... and {implementations.TypeItems.Count - maxResults} more");
-
-            return;
-        }
-
-        foreach (var location in implementations.Locations.Take(maxResults))
-        {
-            var path = new Uri(location.Uri).LocalPath;
-            sb.AppendLine($"• {FormatPath(path)}:{location.Range.Start.Line + 1}:{location.Range.Start.Character + 1}");
-        }
-
-        if (implementations.Locations.Count > maxResults)
-            sb.AppendLine($"... and {implementations.Locations.Count - maxResults} more");
-    }
-
-    private void AppendCallHierarchySection(
-        StringBuilder sb,
-        CallHierarchySummary callHierarchy,
-        int maxResults)
-    {
-        var incomingCount = callHierarchy.Incoming.Count;
-        var outgoingCount = callHierarchy.Outgoing.Count;
-
-        sb.AppendLine();
-        sb.AppendLine($"Incoming Calls ({incomingCount}):");
-        if (incomingCount == 0)
-        {
-            sb.AppendLine("None.");
-        }
-        else
-        {
-            foreach (var call in callHierarchy.Incoming.Take(maxResults))
-                AppendCallSite(sb, call.From, call.FromRanges.FirstOrDefault()?.Start);
-
-            if (incomingCount > maxResults)
-                sb.AppendLine($"... and {incomingCount - maxResults} more");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine($"Outgoing Calls ({outgoingCount}):");
-        if (outgoingCount == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
-
-        foreach (var call in callHierarchy.Outgoing.Take(maxResults))
-            AppendCallSite(sb, call.To, call.FromRanges.FirstOrDefault()?.Start);
-
-        if (outgoingCount > maxResults)
-            sb.AppendLine($"... and {outgoingCount - maxResults} more");
-    }
-
-    private void AppendTypeHierarchySection(
-        StringBuilder sb,
-        TypeHierarchySummary typeHierarchy,
-        int maxResults)
-    {
-        sb.AppendLine();
-        sb.AppendLine($"Supertypes ({typeHierarchy.Supertypes.Count}):");
-        AppendTypeHierarchyItems(sb, typeHierarchy.Supertypes, maxResults);
-
-        sb.AppendLine();
-        sb.AppendLine($"Subtypes ({typeHierarchy.Subtypes.Count}):");
-        AppendTypeHierarchyItems(sb, typeHierarchy.Subtypes, maxResults);
-    }
-
-    private void AppendCallSite(StringBuilder sb, CallHierarchyItem item, Position? position)
+    private HierarchyNodeItem MapTypeHierarchyItem(TypeHierarchyItem item)
     {
         var path = new Uri(item.Uri).LocalPath;
-        sb.AppendLine($"• {item.Name} ({item.Kind})");
-        if (!string.IsNullOrWhiteSpace(item.Detail))
-            sb.AppendLine($"  {item.Detail}");
-
-        var location = position ?? item.SelectionRange.Start;
-        sb.AppendLine($"  {FormatPath(path)}:{location.Line + 1}:{location.Character + 1}");
+        return new HierarchyNodeItem(
+            item.Name,
+            item.Kind.ToString(),
+            item.Detail,
+            FormatPath(path),
+            item.SelectionRange.Start.Line + 1,
+            item.SelectionRange.Start.Character + 1);
     }
 
-    private void AppendTypeHierarchyItems(
-        StringBuilder sb,
-        IReadOnlyCollection<TypeHierarchyItem> items,
-        int maxResults)
+    private HierarchyNodeItem MapLocationAsHierarchyNode(Location location)
     {
-        if (items.Count == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
+        var path = new Uri(location.Uri).LocalPath;
+        return new HierarchyNodeItem(
+            Path.GetFileName(path),
+            "Location",
+            null,
+            FormatPath(path),
+            location.Range.Start.Line + 1,
+            location.Range.Start.Character + 1);
+    }
 
-        foreach (var item in items.Take(maxResults))
-        {
-            var path = new Uri(item.Uri).LocalPath;
-            sb.AppendLine($"• {item.Name} ({item.Kind})");
-            if (!string.IsNullOrWhiteSpace(item.Detail))
-                sb.AppendLine($"  {item.Detail}");
-            sb.AppendLine($"  {FormatPath(path)}:{item.SelectionRange.Start.Line + 1}");
-        }
-
-        if (items.Count > maxResults)
-            sb.AppendLine($"... and {items.Count - maxResults} more");
+    private CallSiteItem MapCallSite(CallHierarchyItem item, Position? position)
+    {
+        var path = new Uri(item.Uri).LocalPath;
+        var location = position ?? item.SelectionRange.Start;
+        return new CallSiteItem(
+            item.Name,
+            item.Kind.ToString(),
+            item.Detail,
+            FormatPath(path),
+            location.Line + 1,
+            location.Character + 1);
     }
 
     private string FormatPath(string filePath)
@@ -770,4 +684,56 @@ public sealed class CSharpSymbolAnalysisService
         public static TypeHierarchySummary Empty { get; } =
             new(null, Array.Empty<TypeHierarchyItem>(), Array.Empty<TypeHierarchyItem>());
     }
+
+    public sealed record SymbolAnalysisResponse(
+        string Summary,
+        SymbolIdentity? Symbol,
+        string? HoverText,
+        LocationItem[] Definitions,
+        int TruncatedDefinitions,
+        LocationItem[] References,
+        int TruncatedReferences,
+        LocationItem[] RelatedTests,
+        int TruncatedRelatedTests,
+        HierarchyNodeItem[] Implementations,
+        int TruncatedImplementations,
+        CallSiteItem[] IncomingCalls,
+        int TruncatedIncomingCalls,
+        CallSiteItem[] OutgoingCalls,
+        int TruncatedOutgoingCalls,
+        HierarchyNodeItem[] Supertypes,
+        int TruncatedSupertypes,
+        HierarchyNodeItem[] Subtypes,
+        int TruncatedSubtypes) : IStructuredToolResult;
+
+    public sealed record SymbolIdentity(
+        string Name,
+        string? Kind,
+        string? Detail,
+        string? ContainerName,
+        string FilePath,
+        int Line,
+        int Character,
+        string? ResolutionNote);
+
+    public sealed record LocationItem(
+        string FilePath,
+        int Line,
+        int Character);
+
+    public sealed record HierarchyNodeItem(
+        string Name,
+        string Kind,
+        string? Detail,
+        string FilePath,
+        int Line,
+        int Character);
+
+    public sealed record CallSiteItem(
+        string Name,
+        string Kind,
+        string? Detail,
+        string FilePath,
+        int Line,
+        int Character);
 }

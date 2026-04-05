@@ -96,15 +96,15 @@ public sealed class CSharpSemanticSearchAnalysisServiceTests
             var bindingSummary = await service.SearchAsync("config_bindings", null, false, 10, CancellationToken.None);
             var middlewareSummary = await service.SearchAsync("middleware_pipeline", null, false, 10, CancellationToken.None);
 
-            Assert.Contains("Matches (2):", endpointSummary);
-            Assert.Contains("[MapGet]", endpointSummary);
-            Assert.DoesNotContain("/test-only", endpointSummary);
-            Assert.Contains("registration:Worker", hostedSummary);
-            Assert.Contains("implementation:Worker", hostedSummary);
-            Assert.Contains("Scoped:IFooService", registrationSummary);
-            Assert.Contains("bind:BrokerOptions", bindingSummary);
-            Assert.Contains("[UseAuthentication]", middlewareSummary);
-            Assert.Contains("[UseAuthorization]", middlewareSummary);
+            Assert.Equal(2, endpointSummary.TotalMatches);
+            Assert.Contains(endpointSummary.Matches, match => match.Kind == "MapGet");
+            Assert.DoesNotContain(endpointSummary.Matches, match => match.Text.Contains("/test-only", StringComparison.Ordinal));
+            Assert.Contains(hostedSummary.Matches, match => match.Kind == "registration:Worker");
+            Assert.Contains(hostedSummary.Matches, match => match.Kind == "implementation:Worker");
+            Assert.Contains(registrationSummary.Matches, match => match.Kind == "Scoped:IFooService");
+            Assert.Contains(bindingSummary.Matches, match => match.Kind == "bind:BrokerOptions");
+            Assert.Contains(middlewareSummary.Matches, match => match.Kind == "UseAuthentication");
+            Assert.Contains(middlewareSummary.Matches, match => match.Kind == "UseAuthorization");
         }
         finally
         {
@@ -124,10 +124,10 @@ public sealed class CSharpSemanticSearchAnalysisServiceTests
             workspaceState.SetPath(workspacePath);
             var service = new CSharpSemanticSearchAnalysisService(workspaceState);
 
-            var summary = await service.SearchAsync("unknown_mode", null, false, 10, CancellationToken.None);
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.SearchAsync("unknown_mode", null, false, 10, CancellationToken.None));
 
-            Assert.Contains("Unsupported semantic search query", summary);
-            Assert.Contains("aspnet_endpoints", summary);
+            Assert.Contains("Unsupported semantic search query", ex.Message);
+            Assert.Contains("aspnet_endpoints", ex.Message);
         }
         finally
         {

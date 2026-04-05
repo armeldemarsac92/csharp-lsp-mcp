@@ -1,6 +1,6 @@
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Workspace;
 
 namespace CSharpLspMcp.Analysis.Architecture;
@@ -21,7 +21,7 @@ public sealed class CSharpEntrypointAnalysisService
         _workspaceState = workspaceState;
     }
 
-    public Task<string> FindEntrypointsAsync(
+    public Task<EntrypointAnalysisResponse> FindEntrypointsAsync(
         bool includeAspNetRoutes,
         bool includeHostedServices,
         bool includeMiddlewarePipeline,
@@ -30,7 +30,7 @@ public sealed class CSharpEntrypointAnalysisService
     {
         var workspacePath = _workspaceState.CurrentPath;
         if (string.IsNullOrWhiteSpace(workspacePath))
-            return Task.FromResult("Error: Workspace is not set. Call csharp_set_workspace first.");
+            throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -51,55 +51,33 @@ public sealed class CSharpEntrypointAnalysisService
             ? FindBackgroundServiceImplementations(workspacePath).ToArray()
             : Array.Empty<SourceLineMatch>();
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"Solution root: {workspacePath}");
-        sb.AppendLine();
-        sb.AppendLine($"Host Projects ({hostProjects.Length}):");
-
-        if (hostProjects.Length == 0)
-        {
-            sb.AppendLine("None.");
-        }
-        else
-        {
-            foreach (var project in hostProjects.Take(effectiveMaxResults))
-            {
-                sb.AppendLine($"• {project.Name} [{project.ProjectType}]");
-                sb.AppendLine($"  Project: {project.RelativeProjectPath}");
-
-                if (project.ProgramPath != null)
-                    sb.AppendLine($"  Program: {project.ProgramPath}");
-
-                if (includeMiddlewarePipeline && project.MiddlewareCalls.Length > 0)
-                    sb.AppendLine($"  Middleware: {string.Join(", ", project.MiddlewareCalls)}");
-
-                if (project.EndpointCompositionCalls.Length > 0)
-                    sb.AppendLine($"  Endpoint composition: {string.Join(", ", project.EndpointCompositionCalls)}");
-            }
-
-            if (hostProjects.Length > effectiveMaxResults)
-                sb.AppendLine($"... and {hostProjects.Length - effectiveMaxResults} more");
-        }
-
-        if (includeAspNetRoutes)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"ASP.NET Route Registrations ({routeRegistrations.Length}):");
-            AppendSourceLineMatches(sb, routeRegistrations, effectiveMaxResults);
-        }
-
-        if (includeHostedServices)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"Hosted Service Registrations ({hostedServiceRegistrations.Length}):");
-            AppendSourceLineMatches(sb, hostedServiceRegistrations, effectiveMaxResults);
-
-            sb.AppendLine();
-            sb.AppendLine($"Background Service Implementations ({hostedServiceImplementations.Length}):");
-            AppendSourceLineMatches(sb, hostedServiceImplementations, effectiveMaxResults);
-        }
-
-        return Task.FromResult(sb.ToString().TrimEnd());
+        return Task.FromResult(
+            new EntrypointAnalysisResponse(
+                Summary: $"Found {hostProjects.Length} host project(s), {routeRegistrations.Length} route registration(s), and {hostedServiceRegistrations.Length + hostedServiceImplementations.Length} hosted-service surface(s).",
+                SolutionRoot: workspacePath,
+                HostProjects: hostProjects
+                    .Take(effectiveMaxResults)
+                    .Select(project => new HostProjectItem(
+                        project.Name,
+                        project.ProjectType,
+                        project.RelativeProjectPath,
+                        project.ProgramPath,
+                        includeMiddlewarePipeline ? project.MiddlewareCalls : Array.Empty<string>(),
+                        project.EndpointCompositionCalls))
+                    .ToArray(),
+                AspNetRoutes: includeAspNetRoutes
+                    ? routeRegistrations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
+                    : Array.Empty<SourceLocationItem>(),
+                HostedServiceRegistrations: includeHostedServices
+                    ? hostedServiceRegistrations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
+                    : Array.Empty<SourceLocationItem>(),
+                BackgroundServiceImplementations: includeHostedServices
+                    ? hostedServiceImplementations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
+                    : Array.Empty<SourceLocationItem>(),
+                TruncatedHostProjects: Math.Max(0, hostProjects.Length - effectiveMaxResults),
+                TruncatedAspNetRoutes: includeAspNetRoutes ? Math.Max(0, routeRegistrations.Length - effectiveMaxResults) : 0,
+                TruncatedHostedServiceRegistrations: includeHostedServices ? Math.Max(0, hostedServiceRegistrations.Length - effectiveMaxResults) : 0,
+                TruncatedBackgroundServiceImplementations: includeHostedServices ? Math.Max(0, hostedServiceImplementations.Length - effectiveMaxResults) : 0));
     }
 
     private static IReadOnlyCollection<ProjectHostInfo> EnumerateProjects(string workspacePath)
@@ -216,23 +194,8 @@ public sealed class CSharpEntrypointAnalysisService
         }
     }
 
-    private static void AppendSourceLineMatches(
-        StringBuilder sb,
-        IReadOnlyCollection<SourceLineMatch> matches,
-        int maxResults)
-    {
-        if (matches.Count == 0)
-        {
-            sb.AppendLine("None.");
-            return;
-        }
-
-        foreach (var match in matches.Take(maxResults))
-            sb.AppendLine($"• {match.RelativePath}:{match.LineNumber} {match.LineText}");
-
-        if (matches.Count > maxResults)
-            sb.AppendLine($"... and {matches.Count - maxResults} more");
-    }
+    private static SourceLocationItem MapSourceLineMatch(SourceLineMatch match)
+        => new(match.RelativePath, match.LineNumber, match.LineText);
 
     private static bool ContainsIgnoredPathSegment(string path)
     {
@@ -284,4 +247,29 @@ public sealed class CSharpEntrypointAnalysisService
         string RelativePath,
         int LineNumber,
         string LineText);
+
+    public sealed record EntrypointAnalysisResponse(
+        string Summary,
+        string SolutionRoot,
+        HostProjectItem[] HostProjects,
+        SourceLocationItem[] AspNetRoutes,
+        SourceLocationItem[] HostedServiceRegistrations,
+        SourceLocationItem[] BackgroundServiceImplementations,
+        int TruncatedHostProjects,
+        int TruncatedAspNetRoutes,
+        int TruncatedHostedServiceRegistrations,
+        int TruncatedBackgroundServiceImplementations) : IStructuredToolResult;
+
+    public sealed record HostProjectItem(
+        string Name,
+        string ProjectType,
+        string ProjectPath,
+        string? ProgramPath,
+        string[] MiddlewareCalls,
+        string[] EndpointCompositionCalls);
+
+    public sealed record SourceLocationItem(
+        string RelativePath,
+        int LineNumber,
+        string Text);
 }

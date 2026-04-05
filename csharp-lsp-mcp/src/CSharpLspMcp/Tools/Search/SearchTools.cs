@@ -28,10 +28,12 @@ public sealed class SearchTools : CSharpToolBase
     public Task<string> SearchSymbolsAsync(
         [Description("Search query for symbol name. Can be empty to inspect top-ranked workspace symbols.")] string query,
         [Description("Maximum number of results to return (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_search_symbols",
+            format,
             ct => _searchAnalysisService.SearchSymbolsAsync(query, maxResults, ct),
             cancellationToken);
 
@@ -42,10 +44,12 @@ public sealed class SearchTools : CSharpToolBase
         [Description("Optional project or path fragment filter.")] string? projectFilter = null,
         [Description("Include matches from test projects and test paths (default: false).")] bool includeTests = false,
         [Description("Maximum number of results to return (default: 20)")] int maxResults = 20,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
-        => ExecuteToolAsync(
+        => ExecuteStructuredToolAsync(
             _logger,
             "csharp_semantic_search",
+            format,
             ct => _semanticSearchAnalysisService.SearchAsync(
                 query,
                 projectFilter,
