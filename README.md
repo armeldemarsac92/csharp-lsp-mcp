@@ -1,11 +1,13 @@
 # C Sharp MCP / C# MCP Server for .NET and XAML
 
-`csharp-lsp-mcp` is a C Sharp MCP server for .NET repositories. It exposes C# and XAML language intelligence, workspace analysis, architecture discovery, DI tracing, test mapping, and dead-code heuristics through the Model Context Protocol.
+`csharp-lsp-mcp` is a C Sharp MCP server for .NET repositories. It exposes C# and XAML language intelligence, workspace analysis, architecture discovery, DI tracing, test mapping, graph-backed change impact, change planning, and verification planning through the Model Context Protocol.
 
 If you are looking for a `c# mcp` or `c sharp MCP` server that is easy for an LLM agent to parse, this project is built for that use case:
 
 - editor-style C# tools backed by `csharp-ls`
 - higher-level codebase analysis tools for .NET solutions
+- a persistent Roslyn-backed code graph with incremental refresh
+- graph-backed change impact, edit planning, and verification planning
 - built-in XAML analysis for WPF and WinUI workflows
 - structured JSON output by default for agent consumption
 
@@ -35,6 +37,14 @@ This MCP server helps AI coding agents and MCP clients inspect medium-to-large .
 - production-to-test mapping
 - dead code candidate detection
 
+### Graph and change-planning tools
+
+- persistent code graph build and refresh
+- graph stats and snapshot inspection
+- downstream change impact analysis
+- ordered change planning
+- verification planning with builds, tests, and focused diagnostics
+
 ### XAML tools
 
 - XAML validation
@@ -56,6 +66,10 @@ Older C# MCP servers often stop at raw LSP primitives. This project also exposes
 - `csharp_semantic_search`
 - `csharp_test_map`
 - `csharp_find_dead_code_candidates`
+- `csharp_build_code_graph`
+- `csharp_change_impact`
+- `csharp_plan_change`
+- `csharp_verify_change`
 
 That makes it easier for an agent to answer questions like:
 
@@ -64,6 +78,28 @@ That makes it easier for an agent to answer questions like:
 - "Which implementation backs this interface?"
 - "Where is this service registered in DI?"
 - "What tests probably cover this type?"
+- "What breaks if I change this symbol?"
+- "Which files should I inspect first?"
+- "What build and test commands should I run after the edit?"
+
+## Graph-Backed Planning for LLM Agents
+
+The newer graph features move this project beyond a thin C# LSP wrapper.
+
+You can now build a persistent Roslyn-backed code graph for a solution, reuse it incrementally, and ask higher-level planning questions that are difficult to answer from raw LSP calls alone:
+
+- `csharp_build_code_graph`: build or refresh the persisted graph
+- `csharp_graph_stats`: inspect the current snapshot and reuse state
+- `csharp_change_impact`: estimate callers, implementations, registrations, entrypoints, and related tests touched by a change
+- `csharp_plan_change`: turn impact into an ordered edit and inspection plan
+- `csharp_verify_change`: generate build, test, and focused-diagnostics verification steps
+
+This is the part of the MCP surface that gives LLM agents the most leverage during real refactors, because it helps answer:
+
+- what else changes when this type or method changes
+- which projects are affected
+- which files are the highest-value inspection targets
+- which verification commands are worth running first
 
 ## Structured Output for Agents
 
@@ -210,10 +246,15 @@ These conventions apply across the C# MCP surface:
 - `maxResults`, `maxDocuments`, `maxDiagnosticsPerDocument`: hard caps for agent context control
 - `minimumSeverity`: for workspace diagnostics, supports `ALL`, `ERROR`, `WARNING`, `INFO`, and `HINT`
 - `includeGenerated`, `includeTests`, `excludePaths`: filtering controls for higher-level analysis tools such as workspace diagnostics and semantic searches
+- `excludeDiagnosticCodes`, `excludeDiagnosticSources`: suppress low-value warnings during workspace or change verification runs
+- `mode`: graph build mode, `incremental` by default or `full` when a complete rebuild is needed
+- `rebuildIfMissing`: graph-backed tools can rebuild persisted graph data automatically when needed
+- `includeRegistrations`, `includeEntrypoints`: opt into DI and startup-surface overlays during change-impact analysis
 
 Important workflow rule:
 
 - call `csharp_set_workspace` before using the C# tools
+- for the graph-backed planning tools, call `csharp_build_code_graph` once up front on larger solutions so later impact and verification calls can reuse persisted data
 
 ## Quick Start
 
@@ -238,7 +279,19 @@ Call with `csharp_set_workspace`.
 
 Call with `csharp_project_overview`.
 
-3. Analyze a symbol:
+3. Build the persistent graph:
+
+```json
+{
+  "mode": "incremental",
+  "includeTests": true,
+  "format": "structured"
+}
+```
+
+Call with `csharp_build_code_graph`.
+
+4. Analyze a symbol:
 
 ```json
 {
@@ -249,6 +302,18 @@ Call with `csharp_project_overview`.
 ```
 
 Call with `csharp_analyze_symbol`.
+
+5. Plan and verify a change:
+
+```json
+{
+  "symbolQuery": "MyCompany.Feature.ServiceBusListener",
+  "includeTests": true,
+  "format": "structured"
+}
+```
+
+Call with `csharp_change_impact`, `csharp_plan_change`, and `csharp_verify_change`.
 
 ## Full Tool Reference
 
@@ -542,6 +607,86 @@ Finds best-effort dead code candidates in the current workspace.
 | `maxResults` | `int` | No | Maximum candidates to return. Default: `20`. |
 | `format` | `string` | No | Output format. Default: `structured`. |
 
+## Graph, Planning, and Verification Tools
+
+### `csharp_build_code_graph`
+
+Builds or refreshes the persistent Roslyn-backed workspace graph.
+
+Incremental mode reuses unchanged project graph slices from the last compatible snapshot, which makes repeated impact and verification calls much cheaper on medium-to-large solutions.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `string?` | No | Optional workspace, solution, or project path. Uses the current workspace when omitted. |
+| `mode` | `string` | No | Build mode: `incremental` (default) or `full`. |
+| `includeTests` | `bool` | No | Include test projects and test paths in the graph. Default: `true`. |
+| `includeGenerated` | `bool` | No | Include generated files such as `obj`, `bin`, and `*.g.cs`. Default: `false`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_graph_stats`
+
+Reads the persisted graph summary for the current workspace or an explicit path.
+
+Useful fields in structured output include snapshot identity, project and symbol counts, edge counts, reuse statistics, and warnings emitted during the last build.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `string?` | No | Optional workspace, solution, or project path. Uses the current workspace when omitted. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_change_impact`
+
+Estimates downstream impact for changing a symbol or file using the persisted graph plus higher-level architecture and test overlays.
+
+This tool is designed to answer "what breaks if I change this?" without forcing the agent to manually combine references, implementations, DI registrations, entrypoints, and test hints across multiple calls.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `symbolQuery` | `string?` | No | Fully qualified symbol name, documentation ID, or simple symbol query. |
+| `filePath` | `string?` | No | Optional file path to analyze instead of or in addition to a symbol query. |
+| `includeTests` | `bool` | No | Include related tests in the impact report. Default: `true`. |
+| `includeRegistrations` | `bool` | No | Include matching DI registrations and consumers. Default: `true`. |
+| `includeEntrypoints` | `bool` | No | Include routes, startup surfaces, hosted services, and other entrypoints. Default: `true`. |
+| `rebuildIfMissing` | `bool` | No | Rebuild the graph automatically when missing or stale. Default: `true`. |
+| `maxResults` | `int` | No | Maximum items to return per section. Default: `20`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_plan_change`
+
+Builds an ordered change plan for a symbol or file: primary edit targets, affected projects, inspection order, and verification steps.
+
+This is the high-level planning companion to `csharp_change_impact`.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `request` | `string?` | No | Optional short description of the intended change. |
+| `symbolQuery` | `string?` | No | Fully qualified symbol name, documentation ID, or simple symbol query. |
+| `filePath` | `string?` | No | Optional file path to analyze instead of or in addition to a symbol query. |
+| `includeTests` | `bool` | No | Include related tests and test-driven verification steps. Default: `true`. |
+| `rebuildIfMissing` | `bool` | No | Rebuild the graph automatically when missing or stale. Default: `true`. |
+| `maxResults` | `int` | No | Maximum items to include per section. Default: `10`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_verify_change`
+
+Prepares a verification plan for changed symbols or files: build commands, test commands, focused diagnostics, and ordered verification steps.
+
+Use this after an edit, or use it up front to decide what the smallest safe validation loop looks like before touching code.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `request` | `string?` | No | Optional short description of the intended change. |
+| `symbolQuery` | `string?` | No | Fully qualified symbol name, documentation ID, or simple symbol query. |
+| `filePath` | `string?` | No | Optional file path to analyze instead of or in addition to a symbol query. |
+| `changedFiles` | `string[]?` | No | Optional changed files to prioritize in diagnostics and project selection. |
+| `includeTests` | `bool` | No | Include test projects and test diagnostics. Default: `true`. |
+| `rebuildIfMissing` | `bool` | No | Rebuild the graph automatically when missing or stale. Default: `true`. |
+| `minimumSeverity` | `string` | No | Minimum severity for focused diagnostics: `ALL`, `ERROR`, `WARNING` (default), `INFO`, or `HINT`. |
+| `excludeDiagnosticCodes` | `string[]?` | No | Optional diagnostic codes to exclude, such as `IDE0005` or `CS8933`. |
+| `excludeDiagnosticSources` | `string[]?` | No | Optional diagnostic sources to exclude, such as `csharp` or `Style`. |
+| `maxResults` | `int` | No | Maximum items to include per section. Default: `10`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
 ## XAML Tools
 
 ### `xaml_validate`
@@ -640,10 +785,20 @@ Generates a ViewModel interface from inferred binding properties.
 2. `csharp_find_dead_code_candidates`
 3. `csharp_semantic_search`
 
+### Plan and verify a risky refactor
+
+1. `csharp_build_code_graph`
+2. `csharp_change_impact`
+3. `csharp_plan_change`
+4. `csharp_verify_change`
+
 ## Notes and Limitations
 
 - The C# analysis path depends on `csharp-ls`, so its capabilities and quirks affect the low-level editor-style tools.
-- Higher-level tools such as DI tracing, semantic search, test mapping, and dead-code detection are intentionally heuristic. They are designed to be useful for agents, not to act as a full formal static-analysis platform.
+- The higher-level planning path now combines LSP, Roslyn, and a persisted graph. That gives agents much stronger refactor support, but some overlays still remain heuristic.
+- Higher-level tools such as semantic search, test mapping, and dead-code detection are intentionally heuristic. They are designed to be useful for agents, not to act as a full formal static-analysis platform.
+- Graph-backed tools are most effective after `csharp_build_code_graph` has been run once for the current workspace. Incremental refresh is supported, but a `full` rebuild is still useful after major repository churn.
+- DI registrations and entrypoints are now persisted in the graph for impact analysis, but the graph is still a pragmatic agent-oriented model rather than a full general-purpose code-intelligence database.
 - `csharp_set_workspace` should be called before other C# tools so the language server can load the solution correctly.
 
 ## Development
