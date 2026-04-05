@@ -54,7 +54,7 @@ public class CSharpWorkspaceAnalysisServiceTests
             CreateDiagnostic(DiagnosticSeverity.Information, "Info")
         };
 
-        var result = (Diagnostic[])method.Invoke(null, [diagnostics, "WARNING"])!;
+        var result = (Diagnostic[])method.Invoke(null, [diagnostics, "WARNING", Array.Empty<string>(), Array.Empty<string>()])!;
 
         Assert.Collection(
             result,
@@ -62,11 +62,39 @@ public class CSharpWorkspaceAnalysisServiceTests
             diagnostic => Assert.Equal("Warning", diagnostic.Message));
     }
 
-    private static Diagnostic CreateDiagnostic(DiagnosticSeverity severity, string message)
+    [Fact]
+    public void FilterDiagnostics_ExcludesConfiguredDiagnosticCodesAndSources()
+    {
+        var method = typeof(CSharpWorkspaceAnalysisService).GetMethod(
+            "FilterDiagnostics",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var diagnostics = new[]
+        {
+            CreateDiagnostic(DiagnosticSeverity.Warning, "Keep", code: "CS8602", source: "csharp"),
+            CreateDiagnostic(DiagnosticSeverity.Warning, "DropByCode", code: "IDE0005", source: "csharp"),
+            CreateDiagnostic(DiagnosticSeverity.Warning, "DropBySource", code: "MB0001", source: "Style")
+        };
+
+        var result = (Diagnostic[])method.Invoke(null, [diagnostics, "WARNING", new[] { "IDE0005" }, new[] { "Style" }])!;
+
+        var remaining = Assert.Single(result);
+        Assert.Equal("Keep", remaining.Message);
+    }
+
+    private static Diagnostic CreateDiagnostic(
+        DiagnosticSeverity severity,
+        string message,
+        string? code = null,
+        string? source = null)
         => new()
         {
             Severity = severity,
             Message = message,
+            Code = code,
+            Source = source,
             Range = new Range
             {
                 Start = new Position { Line = 0, Character = 0 },

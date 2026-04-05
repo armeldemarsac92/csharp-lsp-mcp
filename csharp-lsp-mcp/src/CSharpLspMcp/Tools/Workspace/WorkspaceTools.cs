@@ -73,6 +73,8 @@ public sealed class WorkspaceTools : CSharpToolBase
         [Description("Include generated files such as obj, bin, and *.g.cs outputs (default: false).")] bool includeGenerated = false,
         [Description("Include test files and test projects in the results (default: true).")] bool includeTests = true,
         [Description("Optional path substrings to exclude from the results.")] string[]? excludePaths = null,
+        [Description("Optional diagnostic codes to exclude, such as IDE0005 or CS8933.")] string[]? excludeDiagnosticCodes = null,
+        [Description("Optional diagnostic sources to exclude, such as csharp or Style.")] string[]? excludeDiagnosticSources = null,
         [Description("Output format: structured (default) or summary.")] string format = "structured",
         CancellationToken cancellationToken = default)
         => ExecuteStructuredToolAsync(
@@ -86,6 +88,8 @@ public sealed class WorkspaceTools : CSharpToolBase
                 includeGenerated,
                 includeTests,
                 excludePaths,
+                excludeDiagnosticCodes,
+                excludeDiagnosticSources,
                 ct),
             cancellationToken);
 }

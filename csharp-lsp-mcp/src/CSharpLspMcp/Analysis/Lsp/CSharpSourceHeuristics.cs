@@ -46,11 +46,35 @@ internal static class CSharpSourceHeuristics
         if (existingSymbols.Length == 0)
             return topLevelSymbols;
 
-        if (existingSymbols.Length == 1 &&
-            string.Equals(existingSymbols[0].Kind, nameof(SymbolKind.File), StringComparison.Ordinal) &&
-            existingSymbols[0].Children.Length == 0)
+        var fileSymbolIndex = Array.FindIndex(
+            existingSymbols,
+            symbol => string.Equals(symbol.Kind, nameof(SymbolKind.File), StringComparison.Ordinal));
+        if (fileSymbolIndex >= 0)
         {
-            return [existingSymbols[0] with { Children = topLevelSymbols }];
+            var mergedSymbols = existingSymbols.ToArray();
+            var fileSymbol = mergedSymbols[fileSymbolIndex];
+            mergedSymbols[fileSymbolIndex] = fileSymbol with
+            {
+                Children = MergeTopLevelProgramChildren(fileSymbol.Children, topLevelSymbols)
+            };
+
+            return mergedSymbols;
+        }
+
+        if (existingSymbols.Any(symbol => string.Equals(symbol.Name, "Program", StringComparison.Ordinal)))
+        {
+            return
+            [
+                new CSharpDocumentAnalysisService.DocumentSymbolItem(
+                    "Program.cs",
+                    nameof(SymbolKind.File),
+                    null,
+                    null,
+                    1,
+                    1,
+                    topLevelSymbols),
+                .. existingSymbols
+            ];
         }
 
         return existingSymbols;
@@ -191,6 +215,21 @@ internal static class CSharpSourceHeuristics
         }
 
         return symbols.ToArray();
+    }
+
+    private static CSharpDocumentAnalysisService.DocumentSymbolItem[] MergeTopLevelProgramChildren(
+        CSharpDocumentAnalysisService.DocumentSymbolItem[] existingChildren,
+        CSharpDocumentAnalysisService.DocumentSymbolItem[] topLevelSymbols)
+    {
+        if (existingChildren.Length == 0)
+            return topLevelSymbols;
+
+        return existingChildren
+            .Concat(topLevelSymbols)
+            .DistinctBy(symbol => $"{symbol.Kind}|{symbol.Name}|{symbol.Line}|{symbol.Character}")
+            .OrderBy(symbol => symbol.Line)
+            .ThenBy(symbol => symbol.Character)
+            .ToArray();
     }
 
     private static CSharpLspMcp.Lsp.Range? FindDeepestContainingDocumentSymbolRange(

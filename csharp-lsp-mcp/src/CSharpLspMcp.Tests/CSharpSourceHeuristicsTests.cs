@@ -48,6 +48,56 @@ public class CSharpSourceHeuristicsTests
     }
 
     [Fact]
+    public void MergeTopLevelProgramSymbols_MergesIntoFileSymbolWhenPartialProgramAlsoExists()
+    {
+        var heuristicsType = typeof(CSharpDocumentAnalysisService).Assembly.GetType("CSharpLspMcp.Analysis.Lsp.CSharpSourceHeuristics");
+        Assert.NotNull(heuristicsType);
+
+        var method = heuristicsType!.GetMethod("MergeTopLevelProgramSymbols", BindingFlags.Public | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var existing = new[]
+        {
+            new CSharpDocumentAnalysisService.DocumentSymbolItem(
+                "Program.cs",
+                "File",
+                null,
+                null,
+                1,
+                1,
+                Array.Empty<CSharpDocumentAnalysisService.DocumentSymbolItem>()),
+            new CSharpDocumentAnalysisService.DocumentSymbolItem(
+                "Program",
+                "Class",
+                null,
+                null,
+                20,
+                1,
+                Array.Empty<CSharpDocumentAnalysisService.DocumentSymbolItem>())
+        };
+        var content =
+            """
+            var builder = WebApplication.CreateBuilder(args);
+            builder.Services.AddAuth();
+            var app = builder.Build();
+            app.UseAuthentication();
+            app.MapApiEndpoints();
+
+            public partial class Program;
+            """;
+
+        var result = (CSharpDocumentAnalysisService.DocumentSymbolItem[])method.Invoke(
+            null,
+            ["/tmp/Program.cs", content, existing])!;
+
+        var programFile = Assert.Single(result.Where(symbol => symbol.Kind == "File"));
+        Assert.Contains(programFile.Children, child => child.Name == "AddAuth");
+        Assert.Contains(programFile.Children, child => child.Name == "UseAuthentication");
+        Assert.Contains(programFile.Children, child => child.Name == "MapApiEndpoints");
+        Assert.Contains(result, symbol => symbol.Name == "Program" && symbol.Kind == "Class");
+    }
+
+    [Fact]
     public void ExtractInvocationProbes_FindsCallsInsideMethodBody()
     {
         var heuristicsType = typeof(CSharpDocumentAnalysisService).Assembly.GetType("CSharpLspMcp.Analysis.Lsp.CSharpSourceHeuristics");

@@ -25,6 +25,8 @@ public sealed class CSharpWorkspaceAnalysisService
         bool includeGenerated,
         bool includeTests,
         IReadOnlyCollection<string>? excludePaths,
+        IReadOnlyCollection<string>? excludeDiagnosticCodes,
+        IReadOnlyCollection<string>? excludeDiagnosticSources,
         CancellationToken cancellationToken)
     {
         var workspacePath = _workspaceSession.WorkspacePath;
@@ -48,6 +50,8 @@ public sealed class CSharpWorkspaceAnalysisService
                 IncludeGenerated: includeGenerated,
                 IncludeTests: includeTests,
                 ExcludedPathPatterns: excludePaths?.Where(path => !string.IsNullOrWhiteSpace(path)).ToArray() ?? Array.Empty<string>(),
+                ExcludedDiagnosticCodes: NormalizeFilters(excludeDiagnosticCodes),
+                ExcludedDiagnosticSources: NormalizeFilters(excludeDiagnosticSources),
                 TotalDiagnostics: 0,
                 TotalDocuments: 0,
                 Documents: Array.Empty<WorkspaceDiagnosticDocument>(),
@@ -60,13 +64,19 @@ public sealed class CSharpWorkspaceAnalysisService
             .Select(path => path.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray() ?? Array.Empty<string>();
+        var excludedDiagnosticCodes = NormalizeFilters(excludeDiagnosticCodes);
+        var excludedDiagnosticSources = NormalizeFilters(excludeDiagnosticSources);
         var documentsWithDiagnostics = report.Items
             .Where(item => string.Equals(item.Kind, "full", StringComparison.OrdinalIgnoreCase))
             .Select(item => new
             {
                 Item = item,
                 FilePath = new Uri(item.Uri).LocalPath,
-                Diagnostics = FilterDiagnostics(item.Diagnostics ?? Array.Empty<Diagnostic>(), effectiveMinimumSeverity)
+                Diagnostics = FilterDiagnostics(
+                    item.Diagnostics ?? Array.Empty<Diagnostic>(),
+                    effectiveMinimumSeverity,
+                    excludedDiagnosticCodes,
+                    excludedDiagnosticSources)
             })
             .Where(item => ShouldIncludeDocument(item.FilePath, includeGenerated, includeTests, excludedPathPatterns))
             .Where(item => item.Diagnostics.Length > 0)
@@ -82,6 +92,8 @@ public sealed class CSharpWorkspaceAnalysisService
                 IncludeGenerated: includeGenerated,
                 IncludeTests: includeTests,
                 ExcludedPathPatterns: excludedPathPatterns,
+                ExcludedDiagnosticCodes: excludedDiagnosticCodes,
+                ExcludedDiagnosticSources: excludedDiagnosticSources,
                 TotalDiagnostics: 0,
                 TotalDocuments: 0,
                 Documents: Array.Empty<WorkspaceDiagnosticDocument>(),
@@ -92,12 +104,22 @@ public sealed class CSharpWorkspaceAnalysisService
         var effectiveMaxDocuments = Math.Max(1, maxDocuments);
         var effectiveMaxDiagnostics = Math.Max(1, maxDiagnosticsPerDocument);
         return new WorkspaceDiagnosticsResponse(
-            Summary: BuildWorkspaceSummary(totalDiagnostics, documentsWithDiagnostics.Length, effectiveMinimumSeverity, includeGenerated, includeTests, excludedPathPatterns),
+            Summary: BuildWorkspaceSummary(
+                totalDiagnostics,
+                documentsWithDiagnostics.Length,
+                effectiveMinimumSeverity,
+                includeGenerated,
+                includeTests,
+                excludedPathPatterns,
+                excludedDiagnosticCodes,
+                excludedDiagnosticSources),
             SolutionRoot: workspacePath,
             MinimumSeverity: effectiveMinimumSeverity,
             IncludeGenerated: includeGenerated,
             IncludeTests: includeTests,
             ExcludedPathPatterns: excludedPathPatterns,
+            ExcludedDiagnosticCodes: excludedDiagnosticCodes,
+            ExcludedDiagnosticSources: excludedDiagnosticSources,
             TotalDiagnostics: totalDiagnostics,
             TotalDocuments: documentsWithDiagnostics.Length,
             Documents: documentsWithDiagnostics.Take(effectiveMaxDocuments)
@@ -108,6 +130,8 @@ public sealed class CSharpWorkspaceAnalysisService
                         .Take(effectiveMaxDiagnostics)
                         .Select(diagnostic => new WorkspaceDiagnosticItem(
                             FormatSeverity(diagnostic.Severity),
+                            diagnostic.Code?.ToString(),
+                            diagnostic.Source,
                             diagnostic.Range.Start.Line + 1,
                             diagnostic.Range.Start.Character + 1,
                             diagnostic.Message))
@@ -119,12 +143,31 @@ public sealed class CSharpWorkspaceAnalysisService
 
     private static Diagnostic[] FilterDiagnostics(
         IReadOnlyCollection<Diagnostic> diagnostics,
-        string minimumSeverity)
+        string minimumSeverity,
+        IReadOnlyCollection<string> excludeDiagnosticCodes,
+        IReadOnlyCollection<string> excludeDiagnosticSources)
     {
         var threshold = GetSeverityThreshold(minimumSeverity);
         return diagnostics
             .Where(diagnostic => GetSeverityThreshold(FormatSeverity(diagnostic.Severity)) >= threshold)
+            .Where(diagnostic => !ShouldExcludeDiagnostic(diagnostic, excludeDiagnosticCodes, excludeDiagnosticSources))
             .ToArray();
+    }
+
+    private static bool ShouldExcludeDiagnostic(
+        Diagnostic diagnostic,
+        IReadOnlyCollection<string> excludeDiagnosticCodes,
+        IReadOnlyCollection<string> excludeDiagnosticSources)
+    {
+        var diagnosticCode = diagnostic.Code?.ToString();
+        if (!string.IsNullOrWhiteSpace(diagnosticCode) &&
+            excludeDiagnosticCodes.Any(code => string.Equals(code, diagnosticCode, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(diagnostic.Source) &&
+               excludeDiagnosticSources.Any(source => string.Equals(source, diagnostic.Source, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool ShouldIncludeDocument(
@@ -183,6 +226,15 @@ public sealed class CSharpWorkspaceAnalysisService
         };
     }
 
+    private static string[] NormalizeFilters(IReadOnlyCollection<string>? filters)
+    {
+        return filters?
+            .Where(filter => !string.IsNullOrWhiteSpace(filter))
+            .Select(filter => filter.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray() ?? Array.Empty<string>();
+    }
+
     private static int GetSeverityThreshold(string severity)
     {
         return severity switch
@@ -202,7 +254,9 @@ public sealed class CSharpWorkspaceAnalysisService
         string minimumSeverity,
         bool includeGenerated,
         bool includeTests,
-        IReadOnlyCollection<string> excludedPathPatterns)
+        IReadOnlyCollection<string> excludedPathPatterns,
+        IReadOnlyCollection<string> excludedDiagnosticCodes,
+        IReadOnlyCollection<string> excludedDiagnosticSources)
     {
         var clauses = new List<string> { $"minimum severity {minimumSeverity}" };
         if (!includeGenerated)
@@ -211,6 +265,10 @@ public sealed class CSharpWorkspaceAnalysisService
             clauses.Add("test files excluded");
         if (excludedPathPatterns.Count > 0)
             clauses.Add($"{excludedPathPatterns.Count} path exclusion(s)");
+        if (excludedDiagnosticCodes.Count > 0)
+            clauses.Add($"{excludedDiagnosticCodes.Count} diagnostic code exclusion(s)");
+        if (excludedDiagnosticSources.Count > 0)
+            clauses.Add($"{excludedDiagnosticSources.Count} diagnostic source exclusion(s)");
 
         return $"Found {totalDiagnostics} diagnostic(s) across {totalDocuments} document(s) with {string.Join(", ", clauses)}.";
     }
@@ -234,6 +292,8 @@ public sealed class CSharpWorkspaceAnalysisService
         bool IncludeGenerated,
         bool IncludeTests,
         string[] ExcludedPathPatterns,
+        string[] ExcludedDiagnosticCodes,
+        string[] ExcludedDiagnosticSources,
         int TotalDiagnostics,
         int TotalDocuments,
         WorkspaceDiagnosticDocument[] Documents,
@@ -247,6 +307,8 @@ public sealed class CSharpWorkspaceAnalysisService
 
     public sealed record WorkspaceDiagnosticItem(
         string Severity,
+        string? Code,
+        string? Source,
         int Line,
         int Character,
         string Message);

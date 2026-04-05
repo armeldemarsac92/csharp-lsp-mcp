@@ -275,6 +275,8 @@ This tool supports filtering so LLM agents can suppress low-signal diagnostics f
 | `includeGenerated` | `bool` | No | Include generated files such as `obj`, `bin`, and `*.g.cs`. Default: `false`. |
 | `includeTests` | `bool` | No | Include test files and test projects. Default: `true`. |
 | `excludePaths` | `string[]?` | No | Optional file-path substrings to exclude from results. |
+| `excludeDiagnosticCodes` | `string[]?` | No | Optional diagnostic codes to exclude, such as `CS8933`, `CS8019`, or `IDE0005`. |
+| `excludeDiagnosticSources` | `string[]?` | No | Optional diagnostic sources to exclude, such as `lsp` or `csharp`. |
 | `format` | `string` | No | Output format. Default: `structured`. |
 
 ## Document Tools
@@ -343,7 +345,7 @@ Finds references to the symbol at a position.
 
 Lists document symbols for a single C# file.
 
-For top-level `Program.cs` files, this tool can enrich sparse LSP symbol output with heuristic startup-call symbols such as `Add...`, `Use...`, and `Map...` when the underlying server only returns a file-level symbol.
+For top-level `Program.cs` files, this tool can enrich sparse LSP symbol output with heuristic startup-call symbols such as `Add...`, `Use...`, and `Map...` when the underlying server only returns a thin file/program symbol set.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -383,6 +385,8 @@ Returns a rename plan for the symbol at a position.
 ### `csharp_search_symbols`
 
 Searches symbols across the current workspace by name.
+
+Fully qualified queries are ranked so production matches beat fallback test matches when the underlying language server only returns simple-name results.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
