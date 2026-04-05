@@ -26,7 +26,7 @@ public sealed class GraphTools : CSharpToolBase
     [Description("Build or refresh a persistent Roslyn-backed code graph for the current workspace or an explicit solution/project path.")]
     public Task<string> BuildCodeGraphAsync(
         [Description("Optional workspace, solution, or project path. Uses the current workspace when omitted.")] string? path = null,
-        [Description("Build mode: incremental (default) or full. Incremental currently performs a full rebuild with a warning.")] string mode = "incremental",
+        [Description("Build mode: incremental (default) or full. Incremental reuses unchanged project graph slices when a compatible persisted snapshot is available.")] string mode = "incremental",
         [Description("Include test projects and test paths in the graph (default: true).")] bool includeTests = true,
         [Description("Include generated files such as obj, bin, and *.g.cs outputs (default: false).")] bool includeGenerated = false,
         [Description("Output format: structured (default) or summary.")] string format = "structured",

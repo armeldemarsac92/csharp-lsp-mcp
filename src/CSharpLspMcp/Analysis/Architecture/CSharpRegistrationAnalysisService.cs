@@ -47,7 +47,15 @@ public sealed class CSharpRegistrationAnalysisService
             throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(AnalyzeWorkspace(workspacePath, query, includeConsumers, maxResults));
+    }
 
+    internal static RegistrationAnalysisResponse AnalyzeWorkspace(
+        string workspacePath,
+        string? query,
+        bool includeConsumers,
+        int maxResults)
+    {
         var effectiveMaxResults = Math.Max(1, maxResults);
         var registrations = FindRegistrations(workspacePath)
             .Where(registration => MatchesQuery(registration, query))
@@ -70,17 +78,16 @@ public sealed class CSharpRegistrationAnalysisService
 
         if (registrations.Length == 0)
         {
-            return Task.FromResult(
-                new RegistrationAnalysisResponse(
-                    Summary: string.IsNullOrWhiteSpace(query)
-                        ? "No DI registrations were found under the current workspace."
-                        : $"No DI registrations matched '{query}'.",
-                    SolutionRoot: workspacePath,
-                    Query: query,
-                    IncludeConsumers: includeConsumers,
-                    TotalRegistrations: 0,
-                    Registrations: Array.Empty<RegistrationItem>(),
-                    TruncatedRegistrations: 0));
+            return new RegistrationAnalysisResponse(
+                Summary: string.IsNullOrWhiteSpace(query)
+                    ? "No DI registrations were found under the current workspace."
+                    : $"No DI registrations matched '{query}'.",
+                SolutionRoot: workspacePath,
+                Query: query,
+                IncludeConsumers: includeConsumers,
+                TotalRegistrations: 0,
+                Registrations: Array.Empty<RegistrationItem>(),
+                TruncatedRegistrations: 0);
         }
 
         var consumers = includeConsumers
@@ -121,15 +128,14 @@ public sealed class CSharpRegistrationAnalysisService
             })
             .ToArray();
 
-        return Task.FromResult(
-            new RegistrationAnalysisResponse(
-                Summary: $"Found {registrations.Length} DI registration(s){(includeConsumers ? " with consumer tracing" : string.Empty)}.",
-                SolutionRoot: workspacePath,
-                Query: query,
-                IncludeConsumers: includeConsumers,
-                TotalRegistrations: registrations.Length,
-                Registrations: items,
-                TruncatedRegistrations: Math.Max(0, registrations.Length - effectiveMaxResults)));
+        return new RegistrationAnalysisResponse(
+            Summary: $"Found {registrations.Length} DI registration(s){(includeConsumers ? " with consumer tracing" : string.Empty)}.",
+            SolutionRoot: workspacePath,
+            Query: query,
+            IncludeConsumers: includeConsumers,
+            TotalRegistrations: registrations.Length,
+            Registrations: items,
+            TruncatedRegistrations: Math.Max(0, registrations.Length - effectiveMaxResults));
     }
 
     private static IReadOnlyCollection<RegistrationSite> FindRegistrations(string workspacePath)

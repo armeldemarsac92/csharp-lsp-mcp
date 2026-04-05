@@ -13,19 +13,23 @@ public class CSharpGraphCacheStoreTests
         Directory.CreateDirectory(workspacePath);
 
         var snapshot = new WorkspaceGraphSnapshot(
+            SchemaVersion: WorkspaceGraphSchema.CurrentVersion,
             WorkspaceRoot: workspacePath,
             WorkspaceTargetPath: Path.Combine(workspacePath, "App.csproj"),
             BuiltAtUtc: DateTimeOffset.UtcNow,
             BuilderVersion: "test",
             BuildMode: "full",
+            IncludeTests: true,
+            IncludeGenerated: false,
             ProjectsIndexed: 1,
             DocumentsIndexed: 2,
             SymbolsIndexed: 3,
             EdgesIndexed: 4,
             NodeCounts: [new WorkspaceGraphCountItem(WorkspaceGraphNodeKinds.Project, 1)],
             EdgeCounts: [new WorkspaceGraphCountItem(WorkspaceGraphEdgeKinds.Contains, 1)],
-            Projects: [new WorkspaceGraphProjectSummary("App", "App.csproj", "App", ["NET8_0"], false, 2, 3, 0)],
-            Nodes: [new WorkspaceGraphNode("project:app", WorkspaceGraphNodeKinds.Project, "App", "App", null, null, null, null, "App")],
+            Projects: [new WorkspaceGraphProjectSummary("project:app", "App", "App.csproj", "App", ["NET8_0"], false, 2, 3, 0)],
+            ProjectStates: [new WorkspaceGraphProjectState("project:app", "App", "App.csproj", "fingerprint", [])],
+            Nodes: [new WorkspaceGraphNode("project:app", WorkspaceGraphNodeKinds.Project, "App", "App", "project:app", null, null, null, null, "App")],
             Edges: [new WorkspaceGraphEdge(WorkspaceGraphEdgeKinds.Contains, "solution:/tmp", "project:app")],
             Features: [WorkspaceGraphEdgeKinds.Calls],
             Warnings: []);

@@ -117,7 +117,7 @@ public sealed class CSharpChangeImpactService
         var totalRelatedSymbols = BuildRelatedSymbolItems(index, relationSeedIds, workspacePath).Count;
 
         var registrationItems = includeRegistrations
-            ? await BuildRegistrationItemsAsync(candidateNames, projectNames, effectiveMaxResults, cancellationToken)
+            ? await BuildRegistrationItemsAsync(index, relationSeedIds, candidateNames, projectNames, workspacePath, effectiveMaxResults, cancellationToken)
             : new CollectionSlice<ImpactRegistrationItem>(Array.Empty<ImpactRegistrationItem>(), 0);
         var entrypointItems = includeEntrypoints
             ? await BuildEntrypointItemsAsync(candidateNames, projectNames, effectiveMaxResults, cancellationToken)
@@ -278,6 +278,20 @@ public sealed class CSharpChangeImpactService
 
         yield return node.Id;
 
+        if (string.Equals(node.Kind, WorkspaceGraphNodeKinds.Method, StringComparison.Ordinal) ||
+            string.Equals(node.Kind, WorkspaceGraphNodeKinds.Property, StringComparison.Ordinal) ||
+            string.Equals(node.Kind, WorkspaceGraphNodeKinds.Event, StringComparison.Ordinal))
+        {
+            foreach (var relatedTarget in index.GetOutgoingTargets(node.Id, WorkspaceGraphEdgeKinds.Implements)
+                         .Concat(index.GetOutgoingTargets(node.Id, WorkspaceGraphEdgeKinds.Overrides))
+                         .DistinctBy(item => item.Id))
+            {
+                yield return relatedTarget.Id;
+            }
+
+            yield break;
+        }
+
         if (!string.Equals(node.Kind, WorkspaceGraphNodeKinds.Type, StringComparison.Ordinal))
             yield break;
 
@@ -285,10 +299,32 @@ public sealed class CSharpChangeImpactService
                      .Where(member =>
                          string.Equals(member.Kind, WorkspaceGraphNodeKinds.Method, StringComparison.Ordinal) ||
                          string.Equals(member.Kind, WorkspaceGraphNodeKinds.Property, StringComparison.Ordinal) ||
-                         string.Equals(member.Kind, WorkspaceGraphNodeKinds.Field, StringComparison.Ordinal) ||
                          string.Equals(member.Kind, WorkspaceGraphNodeKinds.Event, StringComparison.Ordinal)))
         {
             yield return member.Id;
+
+            foreach (var relatedTarget in index.GetOutgoingTargets(member.Id, WorkspaceGraphEdgeKinds.Implements)
+                         .Concat(index.GetOutgoingTargets(member.Id, WorkspaceGraphEdgeKinds.Overrides))
+                         .DistinctBy(item => item.Id))
+            {
+                yield return relatedTarget.Id;
+            }
+        }
+
+        foreach (var relatedType in index.GetOutgoingTargets(node.Id, WorkspaceGraphEdgeKinds.Implements)
+                     .Concat(index.GetOutgoingTargets(node.Id, WorkspaceGraphEdgeKinds.Inherits))
+                     .DistinctBy(item => item.Id))
+        {
+            yield return relatedType.Id;
+
+            foreach (var relatedMember in index.GetContainedNodes(relatedType.Id)
+                         .Where(member =>
+                             string.Equals(member.Kind, WorkspaceGraphNodeKinds.Method, StringComparison.Ordinal) ||
+                             string.Equals(member.Kind, WorkspaceGraphNodeKinds.Property, StringComparison.Ordinal) ||
+                             string.Equals(member.Kind, WorkspaceGraphNodeKinds.Event, StringComparison.Ordinal)))
+            {
+                yield return relatedMember.Id;
+            }
         }
     }
 
@@ -364,11 +400,18 @@ public sealed class CSharpChangeImpactService
     }
 
     private async Task<CollectionSlice<ImpactRegistrationItem>> BuildRegistrationItemsAsync(
+        WorkspaceGraphIndex index,
+        IEnumerable<string> seedNodeIds,
         IReadOnlySet<string> candidateNames,
         IReadOnlySet<string> projectNames,
+        string workspacePath,
         int maxResults,
         CancellationToken cancellationToken)
     {
+        var graphSlice = BuildRegistrationItemsFromGraph(index, seedNodeIds, workspacePath, maxResults);
+        if (graphSlice.TotalCount > 0)
+            return graphSlice;
+
         var result = await _registrationAnalysisService.FindRegistrationsAsync(
             query: null,
             includeConsumers: true,
@@ -401,6 +444,27 @@ public sealed class CSharpChangeImpactService
         return new CollectionSlice<ImpactRegistrationItem>(
             matches.Take(maxResults).ToArray(),
             matches.Length);
+    }
+
+    private static CollectionSlice<ImpactRegistrationItem> BuildRegistrationItemsFromGraph(
+        WorkspaceGraphIndex index,
+        IEnumerable<string> seedNodeIds,
+        string workspacePath,
+        int maxResults)
+    {
+        var registrations = seedNodeIds
+            .Distinct(StringComparer.Ordinal)
+            .SelectMany(seedNodeId => index.GetIncomingSources(seedNodeId, WorkspaceGraphEdgeKinds.RegisteredAs))
+            .Where(node => string.Equals(node.Kind, WorkspaceGraphNodeKinds.DiRegistration, StringComparison.Ordinal))
+            .DistinctBy(node => node.Id)
+            .Select(node => MapRegistrationFromGraph(index, node, workspacePath))
+            .OrderBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.LineNumber)
+            .ToArray();
+
+        return new CollectionSlice<ImpactRegistrationItem>(
+            registrations.Take(maxResults).ToArray(),
+            registrations.Length);
     }
 
     private async Task<CollectionSlice<ImpactEntrypointItem>> BuildEntrypointItemsAsync(
@@ -597,6 +661,50 @@ public sealed class CSharpChangeImpactService
             Character: node.Character,
             DocumentationId: node.DocumentationId);
 
+    private static ImpactRegistrationItem MapRegistrationFromGraph(
+        WorkspaceGraphIndex index,
+        WorkspaceGraphNode node,
+        string workspacePath)
+    {
+        var payload = ParseRegistrationPayload(node.DocumentationId);
+        var consumers = index.GetOutgoingTargets(node.Id, WorkspaceGraphEdgeKinds.ConsumedBy)
+            .Select(consumer => new ImpactRegistrationConsumerItem(
+                consumer.ProjectName,
+                NormalizeResponseFilePath(consumer.FilePath, workspacePath),
+                consumer.Line ?? 0,
+                consumer.DisplayName))
+            .ToArray();
+
+        return new ImpactRegistrationItem(
+            ServiceType: payload.ServiceType,
+            ImplementationType: payload.ImplementationType,
+            Lifetime: payload.Lifetime,
+            Project: node.ProjectName,
+            RelativePath: NormalizeResponseFilePath(node.FilePath, workspacePath),
+            LineNumber: node.Line ?? 0,
+            SourceText: string.IsNullOrWhiteSpace(node.MetadataName) ? node.DisplayName : node.MetadataName,
+            IsFactory: payload.IsFactory,
+            IsEnumerable: payload.IsEnumerable,
+            Consumers: consumers);
+    }
+
+    private static RegistrationPayload ParseRegistrationPayload(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return new RegistrationPayload(string.Empty, null, string.Empty, false, false);
+
+        var parts = payload.Split('|');
+        if (parts.Length < 6 || !string.Equals(parts[0], "di", StringComparison.Ordinal))
+            return new RegistrationPayload(string.Empty, null, string.Empty, false, false);
+
+        return new RegistrationPayload(
+            ServiceType: parts[2],
+            ImplementationType: string.IsNullOrWhiteSpace(parts[3]) ? null : parts[3],
+            Lifetime: parts[1],
+            IsFactory: string.Equals(parts[4], "factory", StringComparison.OrdinalIgnoreCase),
+            IsEnumerable: string.Equals(parts[5], "enumerable", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static string NormalizeResponseFilePath(string? filePath, string workspacePath)
     {
         if (string.IsNullOrWhiteSpace(filePath))
@@ -660,6 +768,13 @@ public sealed class CSharpChangeImpactService
     private sealed record TargetMatch(
         string MatchKind,
         WorkspaceGraphNode Node);
+
+    private sealed record RegistrationPayload(
+        string ServiceType,
+        string? ImplementationType,
+        string Lifetime,
+        bool IsFactory,
+        bool IsEnumerable);
 
     private sealed class RecommendedFileAccumulator
     {

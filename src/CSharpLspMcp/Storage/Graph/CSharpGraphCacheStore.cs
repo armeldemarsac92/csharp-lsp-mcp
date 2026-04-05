@@ -38,8 +38,22 @@ public sealed class CSharpGraphCacheStore
             return null;
 
         await using var stream = File.OpenRead(storagePath);
-        return await JsonSerializer.DeserializeAsync<WorkspaceGraphSnapshot>(stream, JsonOptions, cancellationToken);
+        var snapshot = await JsonSerializer.DeserializeAsync<WorkspaceGraphSnapshot>(stream, JsonOptions, cancellationToken);
+        return snapshot == null ? null : Normalize(snapshot);
     }
+
+    private static WorkspaceGraphSnapshot Normalize(WorkspaceGraphSnapshot snapshot)
+        => snapshot with
+        {
+            NodeCounts = snapshot.NodeCounts ?? Array.Empty<WorkspaceGraphCountItem>(),
+            EdgeCounts = snapshot.EdgeCounts ?? Array.Empty<WorkspaceGraphCountItem>(),
+            Projects = snapshot.Projects ?? Array.Empty<WorkspaceGraphProjectSummary>(),
+            ProjectStates = snapshot.ProjectStates ?? Array.Empty<WorkspaceGraphProjectState>(),
+            Nodes = snapshot.Nodes ?? Array.Empty<WorkspaceGraphNode>(),
+            Edges = snapshot.Edges ?? Array.Empty<WorkspaceGraphEdge>(),
+            Features = snapshot.Features ?? Array.Empty<string>(),
+            Warnings = snapshot.Warnings ?? Array.Empty<string>()
+        };
 
     internal static string GetStorageDirectory()
     {

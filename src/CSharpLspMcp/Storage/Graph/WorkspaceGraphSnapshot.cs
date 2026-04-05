@@ -1,5 +1,10 @@
 namespace CSharpLspMcp.Storage.Graph;
 
+public static class WorkspaceGraphSchema
+{
+    public const int CurrentVersion = 2;
+}
+
 public static class WorkspaceGraphNodeKinds
 {
     public const string Solution = "Solution";
@@ -11,6 +16,7 @@ public static class WorkspaceGraphNodeKinds
     public const string Property = "Property";
     public const string Field = "Field";
     public const string Event = "Event";
+    public const string DiRegistration = "DiRegistration";
 }
 
 public static class WorkspaceGraphEdgeKinds
@@ -22,14 +28,19 @@ public static class WorkspaceGraphEdgeKinds
     public const string Implements = "implements";
     public const string Overrides = "overrides";
     public const string Calls = "calls";
+    public const string RegisteredAs = "registered_as";
+    public const string ConsumedBy = "consumed_by";
 }
 
 public sealed record WorkspaceGraphSnapshot(
+    int SchemaVersion,
     string WorkspaceRoot,
     string WorkspaceTargetPath,
     DateTimeOffset BuiltAtUtc,
     string BuilderVersion,
     string BuildMode,
+    bool IncludeTests,
+    bool IncludeGenerated,
     int ProjectsIndexed,
     int DocumentsIndexed,
     int SymbolsIndexed,
@@ -37,6 +48,7 @@ public sealed record WorkspaceGraphSnapshot(
     WorkspaceGraphCountItem[] NodeCounts,
     WorkspaceGraphCountItem[] EdgeCounts,
     WorkspaceGraphProjectSummary[] Projects,
+    WorkspaceGraphProjectState[] ProjectStates,
     WorkspaceGraphNode[] Nodes,
     WorkspaceGraphEdge[] Edges,
     string[] Features,
@@ -47,6 +59,7 @@ public sealed record WorkspaceGraphCountItem(
     int Count);
 
 public sealed record WorkspaceGraphProjectSummary(
+    string Id,
     string Name,
     string FilePath,
     string AssemblyName,
@@ -56,11 +69,19 @@ public sealed record WorkspaceGraphProjectSummary(
     int SymbolsIndexed,
     int ProjectReferenceCount);
 
+public sealed record WorkspaceGraphProjectState(
+    string ProjectId,
+    string Name,
+    string FilePath,
+    string Fingerprint,
+    string[] ReferencedProjectIds);
+
 public sealed record WorkspaceGraphNode(
     string Id,
     string Kind,
     string DisplayName,
     string ProjectName,
+    string? OwningProjectId,
     string? FilePath,
     int? Line,
     int? Character,

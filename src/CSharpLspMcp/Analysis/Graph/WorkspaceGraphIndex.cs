@@ -124,7 +124,8 @@ internal sealed class WorkspaceGraphIndex
     private static bool IsSymbolNode(string kind)
         => !string.Equals(kind, WorkspaceGraphNodeKinds.Solution, StringComparison.Ordinal) &&
            !string.Equals(kind, WorkspaceGraphNodeKinds.Project, StringComparison.Ordinal) &&
-           !string.Equals(kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal);
+           !string.Equals(kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal) &&
+           !string.Equals(kind, WorkspaceGraphNodeKinds.DiRegistration, StringComparison.Ordinal);
 
     private static int GetMatchScore(
         WorkspaceGraphNode node,

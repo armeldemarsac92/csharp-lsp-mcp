@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Xml.Linq;
+using CSharpLspMcp.Analysis.Architecture;
 using CSharpLspMcp.Contracts.Common;
 using CSharpLspMcp.Storage.Graph;
 using CSharpLspMcp.Workspace;
@@ -35,31 +38,36 @@ public sealed class CSharpGraphBuildService
         var workspaceRoot = NormalizeWorkspaceRoot(workspaceInput);
         _workspaceState.SetPath(workspaceRoot);
 
-        var normalizedMode = NormalizeMode(mode);
         using var roslynContext = await _roslynWorkspaceHost.OpenAsync(workspaceInput, cancellationToken);
         var warnings = roslynContext.Warnings.ToList();
-        if (string.Equals(normalizedMode, "incremental", StringComparison.OrdinalIgnoreCase))
-        {
-            warnings.Add("Incremental invalidation is not implemented yet; a full graph rebuild was performed.");
-        }
-
+        var normalizedMode = NormalizeMode(mode);
         var startedAt = DateTimeOffset.UtcNow;
-        var snapshot = await BuildSnapshotAsync(
+        var buildResult = await BuildSnapshotAsync(
             roslynContext,
             normalizedMode,
             includeTests,
             includeGenerated,
             warnings,
             cancellationToken);
-        await _graphCacheStore.SaveAsync(snapshot, cancellationToken);
+
+        await _graphCacheStore.SaveAsync(buildResult.Snapshot, cancellationToken);
+
+        var snapshot = buildResult.Snapshot;
         var storagePath = _graphCacheStore.GetStoragePath(snapshot.WorkspaceRoot);
         var durationMs = Math.Max(0, (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds);
+        var summary = buildResult.IncrementalApplied
+            ? $"Incrementally refreshed code graph for {snapshot.ProjectsIndexed} project(s); rebuilt {buildResult.RebuiltProjects.Length} project(s) and reused {buildResult.ReusedProjects.Length}."
+            : $"Built code graph for {snapshot.ProjectsIndexed} project(s), {snapshot.DocumentsIndexed} document(s), and {snapshot.SymbolsIndexed} symbol node(s).";
 
         return new GraphBuildResponse(
-            Summary: $"Built code graph for {snapshot.ProjectsIndexed} project(s), {snapshot.DocumentsIndexed} document(s), and {snapshot.SymbolsIndexed} symbol node(s).",
+            Summary: summary,
+            SchemaVersion: snapshot.SchemaVersion,
             WorkspaceRoot: snapshot.WorkspaceRoot,
             WorkspaceTargetPath: snapshot.WorkspaceTargetPath,
             BuildMode: snapshot.BuildMode,
+            IncludeTests: snapshot.IncludeTests,
+            IncludeGenerated: snapshot.IncludeGenerated,
+            IncrementalApplied: buildResult.IncrementalApplied,
             BuiltAtUtc: snapshot.BuiltAtUtc,
             BuilderVersion: snapshot.BuilderVersion,
             StoragePath: storagePath,
@@ -70,6 +78,8 @@ public sealed class CSharpGraphBuildService
             NodeCounts: snapshot.NodeCounts,
             EdgeCounts: snapshot.EdgeCounts,
             Projects: snapshot.Projects,
+            RebuiltProjects: buildResult.RebuiltProjects,
+            ReusedProjects: buildResult.ReusedProjects,
             Warnings: snapshot.Warnings,
             DurationMs: durationMs);
     }
@@ -85,9 +95,12 @@ public sealed class CSharpGraphBuildService
             return new GraphStatsResponse(
                 Summary: $"No persisted code graph found for {workspaceRoot}.",
                 GraphAvailable: false,
+                SchemaVersion: WorkspaceGraphSchema.CurrentVersion,
                 WorkspaceRoot: workspaceRoot,
                 WorkspaceTargetPath: null,
                 BuildMode: null,
+                IncludeTests: null,
+                IncludeGenerated: null,
                 BuiltAtUtc: null,
                 BuilderVersion: null,
                 StoragePath: storagePath,
@@ -104,9 +117,12 @@ public sealed class CSharpGraphBuildService
         return new GraphStatsResponse(
             Summary: $"Loaded persisted code graph with {snapshot.ProjectsIndexed} project(s), {snapshot.DocumentsIndexed} document(s), and {snapshot.SymbolsIndexed} symbol node(s).",
             GraphAvailable: true,
+            SchemaVersion: snapshot.SchemaVersion,
             WorkspaceRoot: snapshot.WorkspaceRoot,
             WorkspaceTargetPath: snapshot.WorkspaceTargetPath,
             BuildMode: snapshot.BuildMode,
+            IncludeTests: snapshot.IncludeTests,
+            IncludeGenerated: snapshot.IncludeGenerated,
             BuiltAtUtc: snapshot.BuiltAtUtc,
             BuilderVersion: snapshot.BuilderVersion,
             StoragePath: storagePath,
@@ -120,141 +136,124 @@ public sealed class CSharpGraphBuildService
             Warnings: snapshot.Warnings);
     }
 
-    private async Task<WorkspaceGraphSnapshot> BuildSnapshotAsync(
+    private async Task<BuildSnapshotResult> BuildSnapshotAsync(
         RoslynWorkspaceContext roslynContext,
-        string buildMode,
+        string requestedMode,
         bool includeTests,
         bool includeGenerated,
         List<string> warnings,
         CancellationToken cancellationToken)
     {
+        var currentProjects = CreateProjectInputs(roslynContext.Solution, includeTests, includeGenerated);
+        var currentProjectIds = currentProjects
+            .Select(project => project.ProjectId)
+            .ToHashSet(StringComparer.Ordinal);
         var solutionId = CreateSolutionId(roslynContext.WorkspaceRoot);
-        var nodeMap = new Dictionary<string, WorkspaceGraphNode>(StringComparer.Ordinal);
-        var edgeMap = new Dictionary<string, WorkspaceGraphEdge>(StringComparer.Ordinal);
-        var projectSymbolIds = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-        var includedProjectIds = new HashSet<ProjectId>();
 
-        AddNode(
-            nodeMap,
-            new WorkspaceGraphNode(
-                solutionId,
-                WorkspaceGraphNodeKinds.Solution,
-                Path.GetFileName(roslynContext.WorkspaceRoot),
-                string.Empty,
-                null,
-                null,
-                null,
-                null,
-                null));
-
-        var orderedProjects = roslynContext.Solution.Projects
-            .OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        foreach (var project in orderedProjects)
+        WorkspaceGraphSnapshot? previousSnapshot = null;
+        ReuseEligibility reuseEligibility = ReuseEligibility.Disabled("A full graph rebuild was requested.");
+        if (string.Equals(requestedMode, "incremental", StringComparison.OrdinalIgnoreCase))
         {
-            if (!includeTests && IsTestProject(project))
-                continue;
-
-            includedProjectIds.Add(project.Id);
-            projectSymbolIds[project.Name] = new HashSet<string>(StringComparer.Ordinal);
-            AddNode(
-                nodeMap,
-                new WorkspaceGraphNode(
-                    CreateProjectId(project),
-                    WorkspaceGraphNodeKinds.Project,
-                    project.Name,
-                    project.Name,
-                    project.FilePath,
-                    null,
-                    null,
-                    null,
-                    project.AssemblyName));
-            AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, solutionId, CreateProjectId(project));
-
-            foreach (var document in project.Documents
-                         .Where(document => document.FilePath != null)
-                         .Where(document => includeGenerated || !IsGeneratedPath(document.FilePath!))
-                         .OrderBy(document => document.FilePath, StringComparer.OrdinalIgnoreCase))
+            previousSnapshot = await _graphCacheStore.LoadAsync(roslynContext.WorkspaceRoot, cancellationToken);
+            reuseEligibility = EvaluateReuseEligibility(
+                previousSnapshot,
+                roslynContext.TargetPath,
+                includeTests,
+                includeGenerated);
+            if (!reuseEligibility.CanReuse && !string.IsNullOrWhiteSpace(reuseEligibility.Reason))
             {
-                AddNode(
-                    nodeMap,
-                    new WorkspaceGraphNode(
-                        CreateDocumentId(document.FilePath!),
-                        WorkspaceGraphNodeKinds.Document,
-                        Path.GetFileName(document.FilePath!),
-                        project.Name,
-                        document.FilePath,
-                        null,
-                        null,
-                        null,
-                        null));
-                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, CreateProjectId(project), CreateDocumentId(document.FilePath!));
+                warnings.Add(reuseEligibility.Reason);
             }
         }
 
-        foreach (var project in orderedProjects)
+        var nodeMap = new Dictionary<string, WorkspaceGraphNode>(StringComparer.Ordinal);
+        var edgeMap = new Dictionary<string, WorkspaceGraphEdge>(StringComparer.Ordinal);
+        AddNode(
+            nodeMap,
+            new WorkspaceGraphNode(
+                Id: solutionId,
+                Kind: WorkspaceGraphNodeKinds.Solution,
+                DisplayName: Path.GetFileName(roslynContext.WorkspaceRoot),
+                ProjectName: string.Empty,
+                OwningProjectId: null,
+                FilePath: null,
+                Line: null,
+                Character: null,
+                DocumentationId: null,
+                MetadataName: null));
+
+        HashSet<string> rebuiltProjectIds;
+        HashSet<string> reusedProjectIds;
+        if (reuseEligibility.CanReuse && previousSnapshot != null)
         {
-            if (!includedProjectIds.Contains(project.Id))
-                continue;
+            rebuiltProjectIds = DetermineStaleProjectIds(currentProjects, previousSnapshot);
+            reusedProjectIds = currentProjects
+                .Where(project => !rebuiltProjectIds.Contains(project.ProjectId))
+                .Select(project => project.ProjectId)
+                .ToHashSet(StringComparer.Ordinal);
 
-            foreach (var projectReference in project.ProjectReferences)
+            ReuseUnchangedProjectSlices(
+                previousSnapshot,
+                currentProjectIds,
+                rebuiltProjectIds,
+                solutionId,
+                nodeMap,
+                edgeMap);
+        }
+        else
+        {
+            rebuiltProjectIds = currentProjectIds;
+            reusedProjectIds = new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        var rebuiltProjects = currentProjects
+            .Where(project => rebuiltProjectIds.Contains(project.ProjectId))
+            .ToArray();
+
+        foreach (var projectInput in rebuiltProjects)
+        {
+            await BuildProjectNodesAsync(
+                projectInput,
+                includeGenerated,
+                nodeMap,
+                edgeMap,
+                warnings,
+                cancellationToken);
+        }
+
+        foreach (var projectInput in rebuiltProjects)
+        {
+            await BuildCallEdgesForProjectAsync(
+                projectInput.Project,
+                includeGenerated,
+                nodeMap,
+                edgeMap,
+                warnings,
+                cancellationToken);
+        }
+
+        foreach (var projectInput in currentProjects)
+        {
+            AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, solutionId, projectInput.ProjectId);
+
+            foreach (var referencedProjectId in projectInput.ReferencedProjectIds)
             {
-                if (!includedProjectIds.Contains(projectReference.ProjectId))
-                    continue;
-
-                var referencedProject = roslynContext.Solution.GetProject(projectReference.ProjectId);
-                if (referencedProject == null)
+                if (!currentProjectIds.Contains(referencedProjectId))
                     continue;
 
                 AddEdge(
                     edgeMap,
                     WorkspaceGraphEdgeKinds.DependsOnProject,
-                    CreateProjectId(project),
-                    CreateProjectId(referencedProject));
+                    projectInput.ProjectId,
+                    referencedProjectId);
             }
-
-            var compilation = await project.GetCompilationAsync(cancellationToken);
-            if (compilation == null)
-            {
-                warnings.Add($"Failed to build compilation for project {project.Name}.");
-                continue;
-            }
-
-            VisitNamespace(
-                project,
-                compilation.Assembly.GlobalNamespace,
-                CreateProjectId(project),
-                includeGenerated,
-                nodeMap,
-                edgeMap,
-                projectSymbolIds[project.Name],
-                cancellationToken);
         }
 
-        await BuildCallEdgesAsync(
-            roslynContext.Solution,
-            orderedProjects,
-            includedProjectIds,
-            includeGenerated,
+        BuildRegistrationGraph(
+            roslynContext.WorkspaceRoot,
+            currentProjects,
             nodeMap,
-            edgeMap,
-            warnings,
-            cancellationToken);
-
-        var graphProjects = orderedProjects
-            .Where(project => includedProjectIds.Contains(project.Id))
-            .Select(project => new WorkspaceGraphProjectSummary(
-                Name: project.Name,
-                FilePath: project.FilePath ?? project.Name,
-                AssemblyName: project.AssemblyName ?? project.Name,
-                TargetFrameworks: GetTargetFrameworks(project),
-                IsTestProject: IsTestProject(project),
-                DocumentsIndexed: nodeMap.Values.Count(node =>
-                    string.Equals(node.Kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal) &&
-                    string.Equals(node.ProjectName, project.Name, StringComparison.Ordinal)),
-                SymbolsIndexed: projectSymbolIds.TryGetValue(project.Name, out var symbolIds) ? symbolIds.Count : 0,
-                ProjectReferenceCount: project.ProjectReferences.Count(reference => includedProjectIds.Contains(reference.ProjectId))))
-            .ToArray();
+            edgeMap);
 
         var graphNodes = nodeMap.Values
             .OrderBy(node => node.Kind, StringComparer.OrdinalIgnoreCase)
@@ -267,12 +266,33 @@ public sealed class CSharpGraphBuildService
             .ThenBy(edge => edge.TargetId, StringComparer.Ordinal)
             .ToArray();
 
-        return new WorkspaceGraphSnapshot(
+        var graphProjects = currentProjects
+            .Select(project => new WorkspaceGraphProjectSummary(
+                Id: project.ProjectId,
+                Name: project.Name,
+                FilePath: project.ProjectFilePath,
+                AssemblyName: project.AssemblyName,
+                TargetFrameworks: project.TargetFrameworks,
+                IsTestProject: project.IsTestProject,
+                DocumentsIndexed: graphNodes.Count(node =>
+                    string.Equals(node.OwningProjectId, project.ProjectId, StringComparison.Ordinal) &&
+                    string.Equals(node.Kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal)),
+                SymbolsIndexed: graphNodes.Count(node =>
+                    string.Equals(node.OwningProjectId, project.ProjectId, StringComparison.Ordinal) &&
+                    !string.Equals(node.Kind, WorkspaceGraphNodeKinds.Project, StringComparison.Ordinal) &&
+                    !string.Equals(node.Kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal)),
+                ProjectReferenceCount: project.ReferencedProjectIds.Length))
+            .ToArray();
+
+        var snapshot = new WorkspaceGraphSnapshot(
+            SchemaVersion: WorkspaceGraphSchema.CurrentVersion,
             WorkspaceRoot: roslynContext.WorkspaceRoot,
             WorkspaceTargetPath: roslynContext.TargetPath,
             BuiltAtUtc: DateTimeOffset.UtcNow,
             BuilderVersion: typeof(CSharpGraphBuildService).Assembly.GetName().Version?.ToString() ?? "1.0.0",
-            BuildMode: buildMode,
+            BuildMode: reuseEligibility.CanReuse ? "incremental" : "full",
+            IncludeTests: includeTests,
+            IncludeGenerated: includeGenerated,
             ProjectsIndexed: graphProjects.Length,
             DocumentsIndexed: graphNodes.Count(node => string.Equals(node.Kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal)),
             SymbolsIndexed: graphNodes.Count(node =>
@@ -283,10 +303,375 @@ public sealed class CSharpGraphBuildService
             NodeCounts: BuildCounts(graphNodes.Select(node => node.Kind)),
             EdgeCounts: BuildCounts(graphEdges.Select(edge => edge.Kind)),
             Projects: graphProjects,
+            ProjectStates: currentProjects
+                .Select(project => new WorkspaceGraphProjectState(
+                    ProjectId: project.ProjectId,
+                    Name: project.Name,
+                    FilePath: project.ProjectFilePath,
+                    Fingerprint: project.Fingerprint,
+                    ReferencedProjectIds: project.ReferencedProjectIds))
+                .ToArray(),
             Nodes: graphNodes,
             Edges: graphEdges,
-            Features: [WorkspaceGraphEdgeKinds.Calls],
+            Features: [
+                WorkspaceGraphEdgeKinds.Calls,
+                WorkspaceGraphEdgeKinds.RegisteredAs,
+                WorkspaceGraphEdgeKinds.ConsumedBy
+            ],
             Warnings: warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+
+        return new BuildSnapshotResult(
+            Snapshot: snapshot,
+            IncrementalApplied: reuseEligibility.CanReuse,
+            RebuiltProjects: currentProjects
+                .Where(project => rebuiltProjectIds.Contains(project.ProjectId))
+                .Select(project => project.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            ReusedProjects: currentProjects
+                .Where(project => reusedProjectIds.Contains(project.ProjectId))
+                .Select(project => project.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+    }
+
+    private static ProjectGraphInput[] CreateProjectInputs(Solution solution, bool includeTests, bool includeGenerated)
+    {
+        var includedProjects = solution.Projects
+            .Where(project => includeTests || !IsTestProject(project))
+            .OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var includedProjectIds = includedProjects
+            .Select(project => project.Id)
+            .ToHashSet();
+
+        return includedProjects
+            .Select(project =>
+            {
+                var projectId = CreateProjectId(project);
+                var referencedProjectIds = project.ProjectReferences
+                    .Where(reference => includedProjectIds.Contains(reference.ProjectId))
+                    .Select(reference => solution.GetProject(reference.ProjectId))
+                    .OfType<Project>()
+                    .Select(CreateProjectId)
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(id => id, StringComparer.Ordinal)
+                    .ToArray();
+
+                return new ProjectGraphInput(
+                    Project: project,
+                    ProjectId: projectId,
+                    Name: project.Name,
+                    ProjectFilePath: project.FilePath ?? project.Name,
+                    AssemblyName: project.AssemblyName ?? project.Name,
+                    IsTestProject: IsTestProject(project),
+                    TargetFrameworks: GetTargetFrameworks(project),
+                    Fingerprint: ComputeProjectFingerprint(project, includeGenerated),
+                    ReferencedProjectIds: referencedProjectIds);
+            })
+            .ToArray();
+    }
+
+    private static ReuseEligibility EvaluateReuseEligibility(
+        WorkspaceGraphSnapshot? previousSnapshot,
+        string targetPath,
+        bool includeTests,
+        bool includeGenerated)
+    {
+        if (previousSnapshot == null)
+            return ReuseEligibility.Disabled("No persisted graph snapshot was found; a full graph rebuild was performed.");
+
+        if (previousSnapshot.SchemaVersion != WorkspaceGraphSchema.CurrentVersion)
+            return ReuseEligibility.Disabled("The persisted graph schema is outdated; a full graph rebuild was performed.");
+
+        if (!string.Equals(
+                NormalizePath(previousSnapshot.WorkspaceTargetPath),
+                NormalizePath(targetPath),
+                StringComparison.Ordinal))
+        {
+            return ReuseEligibility.Disabled("The workspace target path changed; a full graph rebuild was performed.");
+        }
+
+        if (previousSnapshot.IncludeTests != includeTests || previousSnapshot.IncludeGenerated != includeGenerated)
+        {
+            return ReuseEligibility.Disabled("Graph build options changed; a full graph rebuild was performed.");
+        }
+
+        if (previousSnapshot.ProjectStates.Length == 0)
+            return ReuseEligibility.Disabled("The persisted graph does not contain project fingerprints; a full graph rebuild was performed.");
+
+        return ReuseEligibility.Enabled();
+    }
+
+    private static HashSet<string> DetermineStaleProjectIds(
+        IReadOnlyCollection<ProjectGraphInput> currentProjects,
+        WorkspaceGraphSnapshot previousSnapshot)
+    {
+        var previousStates = previousSnapshot.ProjectStates
+            .ToDictionary(state => state.ProjectId, StringComparer.Ordinal);
+        var staleProjectIds = currentProjects
+            .Where(project =>
+            {
+                if (!previousStates.TryGetValue(project.ProjectId, out var previousState))
+                    return true;
+
+                return !string.Equals(previousState.Fingerprint, project.Fingerprint, StringComparison.Ordinal);
+            })
+            .Select(project => project.ProjectId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        if (staleProjectIds.Count == 0)
+            return staleProjectIds;
+
+        var dependentsByProjectId = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var project in currentProjects)
+        {
+            foreach (var referencedProjectId in project.ReferencedProjectIds)
+            {
+                if (!dependentsByProjectId.TryGetValue(referencedProjectId, out var dependents))
+                {
+                    dependents = new HashSet<string>(StringComparer.Ordinal);
+                    dependentsByProjectId[referencedProjectId] = dependents;
+                }
+
+                dependents.Add(project.ProjectId);
+            }
+        }
+
+        var pending = new Queue<string>(staleProjectIds);
+        while (pending.Count > 0)
+        {
+            var projectId = pending.Dequeue();
+            if (!dependentsByProjectId.TryGetValue(projectId, out var dependents))
+                continue;
+
+            foreach (var dependentProjectId in dependents)
+            {
+                if (!staleProjectIds.Add(dependentProjectId))
+                    continue;
+
+                pending.Enqueue(dependentProjectId);
+            }
+        }
+
+        return staleProjectIds;
+    }
+
+    private static void ReuseUnchangedProjectSlices(
+        WorkspaceGraphSnapshot previousSnapshot,
+        ISet<string> currentProjectIds,
+        ISet<string> rebuiltProjectIds,
+        string solutionId,
+        IDictionary<string, WorkspaceGraphNode> nodeMap,
+        IDictionary<string, WorkspaceGraphEdge> edgeMap)
+    {
+        var previousNodesById = previousSnapshot.Nodes.ToDictionary(node => node.Id, StringComparer.Ordinal);
+
+        foreach (var node in previousSnapshot.Nodes)
+        {
+            if (!IsReusableNode(node, currentProjectIds, rebuiltProjectIds))
+                continue;
+
+            AddNode(nodeMap, node);
+        }
+
+        foreach (var edge in previousSnapshot.Edges)
+        {
+            if (!IsReusableEdge(edge, previousNodesById, currentProjectIds, rebuiltProjectIds, solutionId))
+                continue;
+
+            AddEdge(edgeMap, edge.Kind, edge.SourceId, edge.TargetId);
+        }
+    }
+
+    private static void BuildRegistrationGraph(
+        string workspaceRoot,
+        IReadOnlyCollection<ProjectGraphInput> currentProjects,
+        IDictionary<string, WorkspaceGraphNode> nodeMap,
+        IDictionary<string, WorkspaceGraphEdge> edgeMap)
+    {
+        var registrationResult = CSharpRegistrationAnalysisService.AnalyzeWorkspace(
+            workspaceRoot,
+            query: null,
+            includeConsumers: true,
+            maxResults: int.MaxValue);
+        if (registrationResult.Registrations.Length == 0)
+            return;
+
+        var projectIdByName = currentProjects
+            .ToDictionary(project => project.Name, project => project.ProjectId, StringComparer.OrdinalIgnoreCase);
+        var nodes = nodeMap.Values.ToArray();
+
+        foreach (var registration in registrationResult.Registrations)
+        {
+            if (!projectIdByName.TryGetValue(registration.Project, out var owningProjectId))
+                continue;
+
+            var absolutePath = NormalizePath(Path.Combine(workspaceRoot, registration.RelativePath));
+            var registrationNodeId = CreateRegistrationNodeId(
+                owningProjectId,
+                registration.RelativePath,
+                registration.LineNumber,
+                registration.ServiceType,
+                registration.ImplementationType);
+            AddNode(
+                nodeMap,
+                new WorkspaceGraphNode(
+                    Id: registrationNodeId,
+                    Kind: WorkspaceGraphNodeKinds.DiRegistration,
+                    DisplayName: GetRegistrationDisplayName(registration),
+                    ProjectName: registration.Project,
+                    OwningProjectId: owningProjectId,
+                    FilePath: absolutePath,
+                    Line: registration.LineNumber,
+                    Character: 1,
+                    DocumentationId: CreateRegistrationPayload(registration),
+                    MetadataName: registration.SourceText));
+            AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, owningProjectId, registrationNodeId);
+            AddEdge(edgeMap, WorkspaceGraphEdgeKinds.DeclaredIn, registrationNodeId, CreateDocumentId(absolutePath));
+
+            if (TryResolveTypeNodeId(registration.ServiceType, registration.Project, nodes, out var serviceNodeId))
+            {
+                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.RegisteredAs, registrationNodeId, serviceNodeId);
+            }
+
+            if (!string.IsNullOrWhiteSpace(registration.ImplementationType) &&
+                !string.Equals(registration.ImplementationType, "factory", StringComparison.OrdinalIgnoreCase) &&
+                TryResolveTypeNodeId(registration.ImplementationType!, registration.Project, nodes, out var implementationNodeId))
+            {
+                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.RegisteredAs, registrationNodeId, implementationNodeId);
+            }
+
+            foreach (var consumer in registration.Consumers)
+            {
+                var consumerFilePath = NormalizePath(Path.Combine(workspaceRoot, consumer.RelativePath));
+                if (!TryResolveConsumerNodeId(consumer.Project, consumerFilePath, consumer.LineNumber, nodes, out var consumerNodeId))
+                    continue;
+
+                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.ConsumedBy, registrationNodeId, consumerNodeId);
+            }
+        }
+    }
+
+    private static bool IsReusableNode(
+        WorkspaceGraphNode node,
+        ISet<string> currentProjectIds,
+        ISet<string> rebuiltProjectIds)
+    {
+        if (string.Equals(node.Kind, WorkspaceGraphNodeKinds.Solution, StringComparison.Ordinal))
+            return false;
+
+        if (string.IsNullOrWhiteSpace(node.OwningProjectId))
+            return false;
+
+        return currentProjectIds.Contains(node.OwningProjectId) &&
+            !rebuiltProjectIds.Contains(node.OwningProjectId);
+    }
+
+    private static bool IsReusableEdge(
+        WorkspaceGraphEdge edge,
+        IReadOnlyDictionary<string, WorkspaceGraphNode> previousNodesById,
+        ISet<string> currentProjectIds,
+        ISet<string> rebuiltProjectIds,
+        string solutionId)
+    {
+        if (string.Equals(edge.Kind, WorkspaceGraphEdgeKinds.DependsOnProject, StringComparison.Ordinal))
+            return false;
+
+        if (string.Equals(edge.Kind, WorkspaceGraphEdgeKinds.Contains, StringComparison.Ordinal) &&
+            string.Equals(edge.SourceId, solutionId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var owningProjectId = ResolveEdgeOwningProjectId(edge, previousNodesById);
+        if (string.IsNullOrWhiteSpace(owningProjectId))
+            return false;
+
+        return currentProjectIds.Contains(owningProjectId) &&
+            !rebuiltProjectIds.Contains(owningProjectId);
+    }
+
+    private static string? ResolveEdgeOwningProjectId(
+        WorkspaceGraphEdge edge,
+        IReadOnlyDictionary<string, WorkspaceGraphNode> previousNodesById)
+    {
+        if (previousNodesById.TryGetValue(edge.SourceId, out var sourceNode) &&
+            !string.IsNullOrWhiteSpace(sourceNode.OwningProjectId))
+        {
+            return sourceNode.OwningProjectId;
+        }
+
+        if (previousNodesById.TryGetValue(edge.TargetId, out var targetNode) &&
+            !string.IsNullOrWhiteSpace(targetNode.OwningProjectId))
+        {
+            return targetNode.OwningProjectId;
+        }
+
+        return null;
+    }
+
+    private static async Task BuildProjectNodesAsync(
+        ProjectGraphInput projectInput,
+        bool includeGenerated,
+        IDictionary<string, WorkspaceGraphNode> nodeMap,
+        IDictionary<string, WorkspaceGraphEdge> edgeMap,
+        ICollection<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        AddNode(
+            nodeMap,
+            new WorkspaceGraphNode(
+                Id: projectInput.ProjectId,
+                Kind: WorkspaceGraphNodeKinds.Project,
+                DisplayName: projectInput.Name,
+                ProjectName: projectInput.Name,
+                OwningProjectId: projectInput.ProjectId,
+                FilePath: projectInput.ProjectFilePath,
+                Line: null,
+                Character: null,
+                DocumentationId: null,
+                MetadataName: projectInput.AssemblyName));
+
+        foreach (var document in projectInput.Project.Documents
+                     .Where(document => document.FilePath != null)
+                     .Where(document => includeGenerated || !IsGeneratedPath(document.FilePath!))
+                     .OrderBy(document => document.FilePath, StringComparer.OrdinalIgnoreCase))
+        {
+            var documentId = CreateDocumentId(document.FilePath!);
+            AddNode(
+                nodeMap,
+                new WorkspaceGraphNode(
+                    Id: documentId,
+                    Kind: WorkspaceGraphNodeKinds.Document,
+                    DisplayName: Path.GetFileName(document.FilePath!),
+                    ProjectName: projectInput.Name,
+                    OwningProjectId: projectInput.ProjectId,
+                    FilePath: document.FilePath,
+                    Line: null,
+                    Character: null,
+                    DocumentationId: null,
+                    MetadataName: null));
+            AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, projectInput.ProjectId, documentId);
+        }
+
+        var compilation = await projectInput.Project.GetCompilationAsync(cancellationToken);
+        if (compilation == null)
+        {
+            warnings.Add($"Failed to build compilation for project {projectInput.Name}.");
+            return;
+        }
+
+        VisitNamespace(
+            projectInput.Project,
+            compilation.Assembly.GlobalNamespace,
+            projectInput.ProjectId,
+            includeGenerated,
+            nodeMap,
+            edgeMap,
+            cancellationToken);
     }
 
     private static WorkspaceGraphCountItem[] BuildCounts(IEnumerable<string> kinds)
@@ -296,55 +681,47 @@ public sealed class CSharpGraphBuildService
             .Select(group => new WorkspaceGraphCountItem(group.Key, group.Count()))
             .ToArray();
 
-    private static async Task BuildCallEdgesAsync(
-        Solution solution,
-        IEnumerable<Project> orderedProjects,
-        ISet<ProjectId> includedProjectIds,
+    private static async Task BuildCallEdgesForProjectAsync(
+        Project project,
         bool includeGenerated,
         IDictionary<string, WorkspaceGraphNode> nodeMap,
         IDictionary<string, WorkspaceGraphEdge> edgeMap,
         ICollection<string> warnings,
         CancellationToken cancellationToken)
     {
-        foreach (var project in orderedProjects)
+        foreach (var document in project.Documents
+                     .Where(document => document.FilePath != null)
+                     .Where(document => includeGenerated || !IsGeneratedPath(document.FilePath!))
+                     .OrderBy(document => document.FilePath, StringComparer.OrdinalIgnoreCase))
         {
-            if (!includedProjectIds.Contains(project.Id))
-                continue;
+            cancellationToken.ThrowIfCancellationRequested();
 
-            foreach (var document in project.Documents
-                         .Where(document => document.FilePath != null)
-                         .Where(document => includeGenerated || !IsGeneratedPath(document.FilePath!))
-                         .OrderBy(document => document.FilePath, StringComparer.OrdinalIgnoreCase))
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+            if (root == null || semanticModel == null)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                warnings.Add($"Failed to build semantic model for document {document.FilePath}.");
+                continue;
+            }
 
-                var root = await document.GetSyntaxRootAsync(cancellationToken);
-                var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
-                if (root == null || semanticModel == null)
-                {
-                    warnings.Add($"Failed to build semantic model for document {document.FilePath}.");
+            foreach (var sourceNode in root.DescendantNodes())
+            {
+                var referencedSymbol = TryResolveReferencedSymbol(sourceNode, semanticModel, cancellationToken);
+                if (referencedSymbol == null)
                     continue;
-                }
 
-                foreach (var sourceNode in root.DescendantNodes())
-                {
-                    var referencedSymbol = TryResolveReferencedSymbol(sourceNode, semanticModel, cancellationToken);
-                    if (referencedSymbol == null)
-                        continue;
+                var sourceSymbol = ResolveGraphOwnerSymbol(semanticModel.GetEnclosingSymbol(sourceNode.SpanStart, cancellationToken));
+                if (!TryResolveGraphNodeId(project, sourceSymbol, includeGenerated, nodeMap, out var sourceId))
+                    continue;
 
-                    var sourceSymbol = ResolveGraphOwnerSymbol(semanticModel.GetEnclosingSymbol(sourceNode.SpanStart, cancellationToken));
-                    if (!TryResolveGraphNodeId(project, sourceSymbol, includeGenerated, nodeMap, out var sourceId))
-                        continue;
+                var targetSymbol = ResolveReferencedGraphSymbol(referencedSymbol);
+                if (!TryResolveGraphNodeId(project, targetSymbol, includeGenerated, nodeMap, out var targetId))
+                    continue;
 
-                    var targetSymbol = ResolveReferencedGraphSymbol(referencedSymbol);
-                    if (!TryResolveGraphNodeId(project, targetSymbol, includeGenerated, nodeMap, out var targetId))
-                        continue;
+                if (string.Equals(sourceId, targetId, StringComparison.Ordinal))
+                    continue;
 
-                    if (string.Equals(sourceId, targetId, StringComparison.Ordinal))
-                        continue;
-
-                    AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Calls, sourceId, targetId);
-                }
+                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Calls, sourceId, targetId);
             }
         }
     }
@@ -356,7 +733,6 @@ public sealed class CSharpGraphBuildService
         bool includeGenerated,
         IDictionary<string, WorkspaceGraphNode> nodeMap,
         IDictionary<string, WorkspaceGraphEdge> edgeMap,
-        ISet<string> projectSymbolIds,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -370,7 +746,6 @@ public sealed class CSharpGraphBuildService
                 AddNode(nodeMap, namespaceNode);
                 AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, containerId, namespaceNode.Id);
                 AddDeclarationEdges(edgeMap, project, namespaceSymbol, includeGenerated, namespaceNode.Id);
-                projectSymbolIds.Add(namespaceNode.Id);
             }
         }
 
@@ -379,10 +754,10 @@ public sealed class CSharpGraphBuildService
             switch (member)
             {
                 case INamespaceSymbol childNamespace:
-                    VisitNamespace(project, childNamespace, currentContainerId, includeGenerated, nodeMap, edgeMap, projectSymbolIds, cancellationToken);
+                    VisitNamespace(project, childNamespace, currentContainerId, includeGenerated, nodeMap, edgeMap, cancellationToken);
                     break;
                 case INamedTypeSymbol namedType:
-                    VisitNamedType(project, namedType, currentContainerId, includeGenerated, nodeMap, edgeMap, projectSymbolIds, cancellationToken);
+                    VisitNamedType(project, namedType, currentContainerId, includeGenerated, nodeMap, edgeMap, cancellationToken);
                     break;
             }
         }
@@ -395,7 +770,6 @@ public sealed class CSharpGraphBuildService
         bool includeGenerated,
         IDictionary<string, WorkspaceGraphNode> nodeMap,
         IDictionary<string, WorkspaceGraphEdge> edgeMap,
-        ISet<string> projectSymbolIds,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -406,7 +780,6 @@ public sealed class CSharpGraphBuildService
         AddNode(nodeMap, typeNode);
         AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, containerId, typeNode.Id);
         AddDeclarationEdges(edgeMap, project, typeSymbol, includeGenerated, typeNode.Id);
-        projectSymbolIds.Add(typeNode.Id);
 
         if (typeSymbol.BaseType != null && !typeSymbol.BaseType.SpecialType.Equals(SpecialType.System_Object))
         {
@@ -423,19 +796,19 @@ public sealed class CSharpGraphBuildService
             switch (member)
             {
                 case INamedTypeSymbol nestedType:
-                    VisitNamedType(project, nestedType, typeNode.Id, includeGenerated, nodeMap, edgeMap, projectSymbolIds, cancellationToken);
+                    VisitNamedType(project, nestedType, typeNode.Id, includeGenerated, nodeMap, edgeMap, cancellationToken);
                     break;
                 case IMethodSymbol methodSymbol when ShouldIncludeMethod(methodSymbol):
-                    VisitMember(project, methodSymbol, WorkspaceGraphNodeKinds.Method, typeNode.Id, includeGenerated, nodeMap, edgeMap, projectSymbolIds);
+                    VisitMember(project, methodSymbol, WorkspaceGraphNodeKinds.Method, typeNode.Id, includeGenerated, nodeMap, edgeMap);
                     break;
                 case IPropertySymbol propertySymbol:
-                    VisitMember(project, propertySymbol, WorkspaceGraphNodeKinds.Property, typeNode.Id, includeGenerated, nodeMap, edgeMap, projectSymbolIds);
+                    VisitMember(project, propertySymbol, WorkspaceGraphNodeKinds.Property, typeNode.Id, includeGenerated, nodeMap, edgeMap);
                     break;
                 case IFieldSymbol fieldSymbol when !fieldSymbol.IsImplicitlyDeclared:
-                    VisitMember(project, fieldSymbol, WorkspaceGraphNodeKinds.Field, typeNode.Id, includeGenerated, nodeMap, edgeMap, projectSymbolIds);
+                    VisitMember(project, fieldSymbol, WorkspaceGraphNodeKinds.Field, typeNode.Id, includeGenerated, nodeMap, edgeMap);
                     break;
                 case IEventSymbol eventSymbol:
-                    VisitMember(project, eventSymbol, WorkspaceGraphNodeKinds.Event, typeNode.Id, includeGenerated, nodeMap, edgeMap, projectSymbolIds);
+                    VisitMember(project, eventSymbol, WorkspaceGraphNodeKinds.Event, typeNode.Id, includeGenerated, nodeMap, edgeMap);
                     break;
             }
         }
@@ -448,8 +821,7 @@ public sealed class CSharpGraphBuildService
         string containerId,
         bool includeGenerated,
         IDictionary<string, WorkspaceGraphNode> nodeMap,
-        IDictionary<string, WorkspaceGraphEdge> edgeMap,
-        ISet<string> projectSymbolIds)
+        IDictionary<string, WorkspaceGraphEdge> edgeMap)
     {
         if (!TryCreateSymbolNode(project, symbol, nodeKind, includeGenerated, out var memberNode))
             return;
@@ -457,20 +829,88 @@ public sealed class CSharpGraphBuildService
         AddNode(nodeMap, memberNode);
         AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, containerId, memberNode.Id);
         AddDeclarationEdges(edgeMap, project, symbol, includeGenerated, memberNode.Id);
-        projectSymbolIds.Add(memberNode.Id);
 
         switch (symbol)
         {
-            case IMethodSymbol methodSymbol when methodSymbol.OverriddenMethod != null:
-                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Overrides, memberNode.Id, CreateSymbolId(project, methodSymbol.OverriddenMethod));
+            case IMethodSymbol methodSymbol:
+                foreach (var interfaceMethod in GetImplementedInterfaceMembers(methodSymbol))
+                {
+                    AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Implements, memberNode.Id, CreateSymbolId(project, interfaceMethod));
+                }
+
+                if (methodSymbol.OverriddenMethod != null)
+                {
+                    AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Overrides, memberNode.Id, CreateSymbolId(project, methodSymbol.OverriddenMethod));
+                }
+
                 break;
-            case IPropertySymbol propertySymbol when propertySymbol.OverriddenProperty != null:
-                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Overrides, memberNode.Id, CreateSymbolId(project, propertySymbol.OverriddenProperty));
+            case IPropertySymbol propertySymbol:
+                foreach (var interfaceProperty in GetImplementedInterfaceMembers(propertySymbol))
+                {
+                    AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Implements, memberNode.Id, CreateSymbolId(project, interfaceProperty));
+                }
+
+                if (propertySymbol.OverriddenProperty != null)
+                {
+                    AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Overrides, memberNode.Id, CreateSymbolId(project, propertySymbol.OverriddenProperty));
+                }
+
                 break;
-            case IEventSymbol eventSymbol when eventSymbol.OverriddenEvent != null:
-                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Overrides, memberNode.Id, CreateSymbolId(project, eventSymbol.OverriddenEvent));
+            case IEventSymbol eventSymbol:
+                foreach (var interfaceEvent in GetImplementedInterfaceMembers(eventSymbol))
+                {
+                    AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Implements, memberNode.Id, CreateSymbolId(project, interfaceEvent));
+                }
+
+                if (eventSymbol.OverriddenEvent != null)
+                {
+                    AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Overrides, memberNode.Id, CreateSymbolId(project, eventSymbol.OverriddenEvent));
+                }
+
                 break;
         }
+    }
+
+    private static IEnumerable<IMethodSymbol> GetImplementedInterfaceMembers(IMethodSymbol methodSymbol)
+    {
+        if (methodSymbol.MethodKind == MethodKind.Constructor || methodSymbol.ContainingType == null)
+            return Array.Empty<IMethodSymbol>();
+
+        return methodSymbol.ContainingType.AllInterfaces
+            .SelectMany(interfaceSymbol => interfaceSymbol.GetMembers().OfType<IMethodSymbol>())
+            .Where(interfaceMember =>
+                SymbolEqualityComparer.Default.Equals(
+                    methodSymbol.ContainingType.FindImplementationForInterfaceMember(interfaceMember)?.OriginalDefinition,
+                    methodSymbol.OriginalDefinition))
+            .DistinctBy(interfaceMember => interfaceMember.GetDocumentationCommentId() ?? interfaceMember.ToDisplayString());
+    }
+
+    private static IEnumerable<IPropertySymbol> GetImplementedInterfaceMembers(IPropertySymbol propertySymbol)
+    {
+        if (propertySymbol.ContainingType == null)
+            return Array.Empty<IPropertySymbol>();
+
+        return propertySymbol.ContainingType.AllInterfaces
+            .SelectMany(interfaceSymbol => interfaceSymbol.GetMembers().OfType<IPropertySymbol>())
+            .Where(interfaceMember =>
+                SymbolEqualityComparer.Default.Equals(
+                    propertySymbol.ContainingType.FindImplementationForInterfaceMember(interfaceMember)?.OriginalDefinition,
+                    propertySymbol.OriginalDefinition))
+            .DistinctBy(interfaceMember => interfaceMember.GetDocumentationCommentId() ?? interfaceMember.ToDisplayString());
+    }
+
+    private static IEnumerable<IEventSymbol> GetImplementedInterfaceMembers(IEventSymbol eventSymbol)
+    {
+        if (eventSymbol.ContainingType == null)
+            return Array.Empty<IEventSymbol>();
+
+        return eventSymbol.ContainingType.AllInterfaces
+            .SelectMany(interfaceSymbol => interfaceSymbol.GetMembers().OfType<IEventSymbol>())
+            .Where(interfaceMember =>
+                SymbolEqualityComparer.Default.Equals(
+                    eventSymbol.ContainingType.FindImplementationForInterfaceMember(interfaceMember)?.OriginalDefinition,
+                    eventSymbol.OriginalDefinition))
+            .DistinctBy(interfaceMember => interfaceMember.GetDocumentationCommentId() ?? interfaceMember.ToDisplayString());
     }
 
     private static ISymbol? TryResolveReferencedSymbol(
@@ -574,11 +1014,13 @@ public sealed class CSharpGraphBuildService
 
         var lineSpan = sourceLocation.GetLineSpan();
         var documentationId = symbol.GetDocumentationCommentId();
+        var projectId = CreateProjectId(project);
         node = new WorkspaceGraphNode(
             Id: CreateSymbolId(project, symbol),
             Kind: nodeKind,
             DisplayName: GetDisplayName(symbol),
             ProjectName: project.Name,
+            OwningProjectId: projectId,
             FilePath: sourceLocation.SourceTree?.FilePath,
             Line: lineSpan.StartLinePosition.Line + 1,
             Character: lineSpan.StartLinePosition.Character + 1,
@@ -675,12 +1117,211 @@ public sealed class CSharpGraphBuildService
         }
     }
 
+    private static string ComputeProjectFingerprint(Project project, bool includeGenerated)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine(project.Name);
+        builder.AppendLine(project.AssemblyName ?? string.Empty);
+        AppendFileFingerprint(builder, project.FilePath);
+
+        foreach (var projectReference in project.ProjectReferences
+                     .Select(reference => project.Solution.GetProject(reference.ProjectId))
+                     .OfType<Project>()
+                     .Select(CreateProjectId)
+                     .OrderBy(value => value, StringComparer.Ordinal))
+        {
+            builder.Append("ref:").AppendLine(projectReference);
+        }
+
+        foreach (var document in project.Documents
+                     .Where(document => document.FilePath != null)
+                     .Where(document => includeGenerated || !IsGeneratedPath(document.FilePath!))
+                     .OrderBy(document => document.FilePath, StringComparer.OrdinalIgnoreCase))
+        {
+            AppendFileFingerprint(builder, document.FilePath);
+        }
+
+        return ComputeSha256(builder.ToString());
+    }
+
+    private static void AppendFileFingerprint(StringBuilder builder, string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return;
+
+        var normalizedPath = NormalizePath(filePath);
+        builder.Append("file:").Append(normalizedPath);
+        if (!File.Exists(normalizedPath))
+        {
+            builder.AppendLine("|missing");
+            return;
+        }
+
+        var fileInfo = new FileInfo(normalizedPath);
+        builder.Append('|').Append(fileInfo.LastWriteTimeUtc.Ticks);
+        builder.Append('|').Append(fileInfo.Length);
+        builder.AppendLine();
+    }
+
+    private static string ComputeSha256(string value)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+
+    private static string CreateRegistrationNodeId(
+        string owningProjectId,
+        string relativePath,
+        int lineNumber,
+        string serviceType,
+        string? implementationType)
+        => $"registration:{owningProjectId}:{relativePath.Replace('\\', '/')}:{lineNumber}:{serviceType}:{implementationType ?? string.Empty}";
+
+    private static string GetRegistrationDisplayName(CSharpRegistrationAnalysisService.RegistrationItem registration)
+        => string.IsNullOrWhiteSpace(registration.ImplementationType)
+            ? $"{registration.Lifetime} {registration.ServiceType}"
+            : $"{registration.Lifetime} {registration.ServiceType} -> {registration.ImplementationType}";
+
+    private static string CreateRegistrationPayload(CSharpRegistrationAnalysisService.RegistrationItem registration)
+        => string.Join(
+            "|",
+            [
+                "di",
+                registration.Lifetime,
+                registration.ServiceType,
+                registration.ImplementationType ?? string.Empty,
+                registration.IsFactory ? "factory" : "direct",
+                registration.IsEnumerable ? "enumerable" : "single"
+            ]);
+
+    private static bool TryResolveTypeNodeId(
+        string typeName,
+        string registrationProject,
+        IEnumerable<WorkspaceGraphNode> nodes,
+        out string nodeId)
+    {
+        nodeId = string.Empty;
+        if (string.IsNullOrWhiteSpace(typeName))
+            return false;
+
+        var candidate = NormalizeTypeName(typeName);
+        var simpleCandidate = GetSimpleTypeName(candidate);
+        var match = nodes
+            .Where(node => string.Equals(node.Kind, WorkspaceGraphNodeKinds.Type, StringComparison.Ordinal))
+            .Select(node => new
+            {
+                Node = node,
+                Score = GetTypeMatchScore(node, candidate, simpleCandidate, registrationProject)
+            })
+            .Where(item => item.Score > 0)
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Node.ProjectName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Node.FilePath ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        if (match == null)
+            return false;
+
+        nodeId = match.Node.Id;
+        return true;
+    }
+
+    private static int GetTypeMatchScore(
+        WorkspaceGraphNode node,
+        string candidate,
+        string simpleCandidate,
+        string registrationProject)
+    {
+        var score = 0;
+        var documentationPayload = ExtractDocumentationPayload(node.DocumentationId);
+        if (string.Equals(documentationPayload, candidate, StringComparison.OrdinalIgnoreCase))
+            score = Math.Max(score, 300);
+        else if (documentationPayload.EndsWith($".{candidate}", StringComparison.OrdinalIgnoreCase))
+            score = Math.Max(score, 260);
+
+        if (string.Equals(node.MetadataName, simpleCandidate, StringComparison.OrdinalIgnoreCase))
+            score = Math.Max(score, 180);
+        if (string.Equals(node.DisplayName, simpleCandidate, StringComparison.OrdinalIgnoreCase))
+            score = Math.Max(score, 170);
+
+        if (string.Equals(node.ProjectName, registrationProject, StringComparison.OrdinalIgnoreCase))
+            score += 20;
+
+        return score;
+    }
+
+    private static bool TryResolveConsumerNodeId(
+        string consumerProject,
+        string consumerFilePath,
+        int lineNumber,
+        IEnumerable<WorkspaceGraphNode> nodes,
+        out string nodeId)
+    {
+        nodeId = string.Empty;
+        var match = nodes
+            .Where(node => !string.IsNullOrWhiteSpace(node.FilePath))
+            .Where(node => !string.Equals(node.Kind, WorkspaceGraphNodeKinds.Project, StringComparison.Ordinal))
+            .Where(node => !string.Equals(node.Kind, WorkspaceGraphNodeKinds.Document, StringComparison.Ordinal))
+            .Where(node => !string.Equals(node.Kind, WorkspaceGraphNodeKinds.Namespace, StringComparison.Ordinal))
+            .Where(node => string.Equals(NormalizePath(node.FilePath!), consumerFilePath, StringComparison.Ordinal))
+            .Where(node => (node.Line ?? int.MaxValue) <= lineNumber)
+            .Select(node => new
+            {
+                Node = node,
+                KindScore = GetConsumerKindScore(node.Kind),
+                LineDistance = lineNumber - (node.Line ?? lineNumber)
+            })
+            .OrderByDescending(item => string.Equals(item.Node.ProjectName, consumerProject, StringComparison.OrdinalIgnoreCase))
+            .ThenBy(item => item.LineDistance)
+            .ThenByDescending(item => item.KindScore)
+            .FirstOrDefault();
+        if (match == null)
+            return false;
+
+        nodeId = match.Node.Id;
+        return true;
+    }
+
+    private static int GetConsumerKindScore(string kind)
+        => kind switch
+        {
+            WorkspaceGraphNodeKinds.Method => 4,
+            WorkspaceGraphNodeKinds.Property => 3,
+            WorkspaceGraphNodeKinds.Event => 3,
+            WorkspaceGraphNodeKinds.Type => 2,
+            WorkspaceGraphNodeKinds.Field => 1,
+            _ => 0
+        };
+
+    private static string ExtractDocumentationPayload(string? documentationId)
+    {
+        if (string.IsNullOrWhiteSpace(documentationId))
+            return string.Empty;
+
+        var trimmed = documentationId.Trim();
+        var separatorIndex = trimmed.IndexOf(':');
+        return separatorIndex >= 0 && separatorIndex < trimmed.Length - 1
+            ? trimmed[(separatorIndex + 1)..]
+            : trimmed;
+    }
+
+    private static string NormalizeTypeName(string value)
+        => value
+            .Replace("global::", string.Empty, StringComparison.Ordinal)
+            .Trim()
+            .TrimEnd('?');
+
+    private static string GetSimpleTypeName(string value)
+    {
+        var normalizedValue = NormalizeTypeName(value);
+        var lastDotIndex = normalizedValue.LastIndexOf('.');
+        return lastDotIndex >= 0
+            ? normalizedValue[(lastDotIndex + 1)..]
+            : normalizedValue;
+    }
+
     private static string GetDisplayName(ISymbol symbol)
         => symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
 
     private static void AddNode(IDictionary<string, WorkspaceGraphNode> nodeMap, WorkspaceGraphNode node)
     {
-        nodeMap.TryAdd(node.Id, node);
+        nodeMap[node.Id] = node;
     }
 
     private static void AddEdge(
@@ -690,7 +1331,7 @@ public sealed class CSharpGraphBuildService
         string targetId)
     {
         var key = $"{kind}|{sourceId}|{targetId}";
-        edgeMap.TryAdd(key, new WorkspaceGraphEdge(kind, sourceId, targetId));
+        edgeMap[key] = new WorkspaceGraphEdge(kind, sourceId, targetId);
     }
 
     private static string CreateSolutionId(string workspaceRoot)
@@ -748,9 +1389,13 @@ public sealed class CSharpGraphBuildService
 
     public sealed record GraphBuildResponse(
         string Summary,
+        int SchemaVersion,
         string WorkspaceRoot,
         string WorkspaceTargetPath,
         string BuildMode,
+        bool IncludeTests,
+        bool IncludeGenerated,
+        bool IncrementalApplied,
         DateTimeOffset BuiltAtUtc,
         string BuilderVersion,
         string StoragePath,
@@ -761,15 +1406,20 @@ public sealed class CSharpGraphBuildService
         WorkspaceGraphCountItem[] NodeCounts,
         WorkspaceGraphCountItem[] EdgeCounts,
         WorkspaceGraphProjectSummary[] Projects,
+        string[] RebuiltProjects,
+        string[] ReusedProjects,
         string[] Warnings,
         int DurationMs) : IStructuredToolResult;
 
     public sealed record GraphStatsResponse(
         string Summary,
         bool GraphAvailable,
+        int SchemaVersion,
         string WorkspaceRoot,
         string? WorkspaceTargetPath,
         string? BuildMode,
+        bool? IncludeTests,
+        bool? IncludeGenerated,
         DateTimeOffset? BuiltAtUtc,
         string? BuilderVersion,
         string StoragePath,
@@ -781,4 +1431,30 @@ public sealed class CSharpGraphBuildService
         WorkspaceGraphCountItem[] EdgeCounts,
         WorkspaceGraphProjectSummary[] Projects,
         string[] Warnings) : IStructuredToolResult;
+
+    private sealed record ProjectGraphInput(
+        Project Project,
+        string ProjectId,
+        string Name,
+        string ProjectFilePath,
+        string AssemblyName,
+        bool IsTestProject,
+        string[] TargetFrameworks,
+        string Fingerprint,
+        string[] ReferencedProjectIds);
+
+    private sealed record ReuseEligibility(bool CanReuse, string? Reason)
+    {
+        public static ReuseEligibility Enabled()
+            => new(true, null);
+
+        public static ReuseEligibility Disabled(string reason)
+            => new(false, reason);
+    }
+
+    private sealed record BuildSnapshotResult(
+        WorkspaceGraphSnapshot Snapshot,
+        bool IncrementalApplied,
+        string[] RebuiltProjects,
+        string[] ReusedProjects);
 }
