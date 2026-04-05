@@ -77,6 +77,7 @@ public class Program
             builder.Services.AddSingleton<CSharpRoslynWorkspaceHost>();
             builder.Services.AddSingleton<CSharpGraphCacheStore>();
             builder.Services.AddSingleton<CSharpGraphBuildService>();
+            builder.Services.AddSingleton<CSharpGraphProjectionService>();
             builder.Services.AddSingleton<CSharpChangeImpactService>();
             builder.Services.AddSingleton<CSharpChangePlanService>();
             builder.Services.AddSingleton<CSharpChangeVerificationService>();
@@ -174,6 +175,7 @@ AVAILABLE TOOLS:
     csharp_semantic_search - Run named semantic searches across the workspace
     csharp_build_code_graph - Build or refresh a persistent Roslyn-backed code graph
     csharp_graph_stats - Read persisted code graph stats for the workspace
+    csharp_export_code_graph - Render the persisted graph as Mermaid or DOT
     csharp_change_impact - Analyze likely downstream impact of changing a symbol or file
     csharp_plan_change - Build an ordered edit and verification plan for a requested change
     csharp_verify_change - Prepare build, test, and diagnostics verification steps for a change

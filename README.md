@@ -90,6 +90,7 @@ You can now build a persistent Roslyn-backed code graph for a solution, reuse it
 
 - `csharp_build_code_graph`: build or refresh the persisted graph
 - `csharp_graph_stats`: inspect the current snapshot and reuse state
+- `csharp_export_code_graph`: render the persisted graph as Mermaid or DOT for quick visualization
 - `csharp_change_impact`: estimate callers, implementations, registrations, entrypoints, and related tests touched by a change
 - `csharp_plan_change`: turn impact into an ordered edit and inspection plan
 - `csharp_verify_change`: generate build, test, and focused-diagnostics verification steps
@@ -633,6 +634,58 @@ Useful fields in structured output include snapshot identity, project and symbol
 | --- | --- | --- | --- |
 | `path` | `string?` | No | Optional workspace, solution, or project path. Uses the current workspace when omitted. |
 | `format` | `string` | No | Output format. Default: `structured`. |
+
+### `csharp_export_code_graph`
+
+Renders the persisted graph as Mermaid or Graphviz DOT, and by default also writes a real `.mmd` or `.dot` file for user-facing visualization.
+
+Use this when you want a compact picture of the workspace shape, a project slice, or the neighborhood around one symbol without manually assembling nodes and edges yourself.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `string?` | No | Optional workspace, solution, or project path. Uses the current workspace when omitted. |
+| `layout` | `string` | No | Output graph syntax: `mermaid` (default) or `dot`. |
+| `focusSymbol` | `string?` | No | Optional fully qualified symbol name, documentation ID, or simple symbol query for a focused neighborhood. |
+| `projectFilter` | `string?` | No | Optional project name or path fragment for a project-scoped slice. Exact project matches are preferred over broader partial matches. |
+| `includeTypes` | `bool` | No | Include type nodes in project or overview slices. Default: `false`. |
+| `includeMembers` | `bool` | No | Include method, property, field, and event nodes. Default: `false`. |
+| `includeDocuments` | `bool` | No | Include document nodes. Default: `false`. |
+| `includeDi` | `bool` | No | Include DI registration nodes. Default: `true`. |
+| `includeEntrypoints` | `bool` | No | Include entrypoint nodes such as host projects, routes, and handlers. Default: `true`. |
+| `edgeKinds` | `string[]?` | No | Optional edge kinds to include: `contains`, `depends_on_project`, `inherits`, `implements`, `overrides`, `calls`, `registered_as`, `consumed_by`. |
+| `maxNodes` | `int` | No | Maximum nodes to render. Default: `80`. |
+| `maxEdges` | `int` | No | Maximum edges to render. Default: `160`. |
+| `rebuildIfMissing` | `bool` | No | Build the graph automatically when no persisted snapshot exists. Default: `true`. |
+| `writeToFile` | `bool` | No | Write a real `.mmd` or `.dot` file. Default: `true`. |
+| `outputPath` | `string?` | No | Optional export file path. Relative paths are resolved from the workspace root. When omitted, the server writes to `.csharp-lsp-mcp/exports/`. |
+| `format` | `string` | No | Output format. Default: `structured`. |
+
+Structured output includes both the inline `projection` text and the exported `exportPath`, so an agent can parse the graph while the user can open the generated file directly.
+
+Example Mermaid export:
+
+```json
+{
+  "focusSymbol": "MeshBoard.Contracts.Authentication.AppUserPrincipalFactory",
+  "layout": "mermaid",
+  "includeTypes": true,
+  "includeDi": true,
+  "includeEntrypoints": true
+}
+```
+
+Example DOT export:
+
+```json
+{
+  "projectFilter": "MeshBoard.Api",
+  "layout": "dot",
+  "includeTypes": true,
+  "includeMembers": true,
+  "maxNodes": 120,
+  "maxEdges": 220
+}
+```
 
 ### `csharp_change_impact`
 

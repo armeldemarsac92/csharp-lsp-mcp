@@ -10,16 +10,19 @@ public sealed class GraphTools : CSharpToolBase
 {
     private readonly CSharpGraphBuildService _graphBuildService;
     private readonly CSharpChangeImpactService _changeImpactService;
+    private readonly CSharpGraphProjectionService _graphProjectionService;
     private readonly ILogger<GraphTools> _logger;
 
     public GraphTools(
         ILogger<GraphTools> logger,
         CSharpGraphBuildService graphBuildService,
-        CSharpChangeImpactService changeImpactService)
+        CSharpChangeImpactService changeImpactService,
+        CSharpGraphProjectionService graphProjectionService)
     {
         _logger = logger;
         _graphBuildService = graphBuildService;
         _changeImpactService = changeImpactService;
+        _graphProjectionService = graphProjectionService;
     }
 
     [McpServerTool(Name = "csharp_build_code_graph")]
@@ -49,6 +52,49 @@ public sealed class GraphTools : CSharpToolBase
             "csharp_graph_stats",
             format,
             ct => _graphBuildService.GetStatsAsync(path, ct),
+            cancellationToken);
+
+    [McpServerTool(Name = "csharp_export_code_graph")]
+    [Description("Render the persisted code graph as Mermaid or DOT with optional symbol focus, project filtering, and node/edge caps for visualization.")]
+    public Task<string> ExportCodeGraphAsync(
+        [Description("Optional workspace, solution, or project path. Uses the current workspace when omitted.")] string? path = null,
+        [Description("Projection layout: mermaid (default) or dot.")] string layout = "mermaid",
+        [Description("Optional fully qualified symbol name, documentation ID, or simple symbol query to render a focused graph neighborhood.")] string? focusSymbol = null,
+        [Description("Optional project name or path fragment filter for a project-scoped graph slice.")] string? projectFilter = null,
+        [Description("Include type nodes in project or overview slices (default: false). Focused symbol nodes are always included.")] bool includeTypes = false,
+        [Description("Include method, property, field, and event nodes (default: false). Focused symbol nodes are always included.")] bool includeMembers = false,
+        [Description("Include document nodes (default: false).")] bool includeDocuments = false,
+        [Description("Include DI registration nodes (default: true).")] bool includeDi = true,
+        [Description("Include entrypoint nodes such as host projects and routes (default: true).")] bool includeEntrypoints = true,
+        [Description("Optional edge kinds to include, such as contains, depends_on_project, calls, implements, inherits, overrides, registered_as, or consumed_by.")] string[]? edgeKinds = null,
+        [Description("Maximum nodes to render (default: 80).")] int maxNodes = 80,
+        [Description("Maximum edges to render (default: 160).")] int maxEdges = 160,
+        [Description("Rebuild the graph automatically when it is missing (default: true).")] bool rebuildIfMissing = true,
+        [Description("Write the rendered projection to a real .mmd or .dot file for user-facing visualization (default: true).")] bool writeToFile = true,
+        [Description("Optional output file path. Relative paths are resolved from the workspace root. When omitted, the server writes to .csharp-lsp-mcp/exports/ under the workspace root.")] string? outputPath = null,
+        [Description("Output format: structured (default) or summary.")] string format = "structured",
+        CancellationToken cancellationToken = default)
+        => ExecuteStructuredToolAsync(
+            _logger,
+            "csharp_export_code_graph",
+            format,
+            ct => _graphProjectionService.ExportAsync(
+                path,
+                layout,
+                focusSymbol,
+                projectFilter,
+                includeTypes,
+                includeMembers,
+                includeDocuments,
+                includeDi,
+                includeEntrypoints,
+                edgeKinds,
+                maxNodes,
+                maxEdges,
+                rebuildIfMissing,
+                writeToFile,
+                outputPath,
+                ct),
             cancellationToken);
 
     [McpServerTool(Name = "csharp_change_impact")]
