@@ -17,6 +17,7 @@ public static class WorkspaceGraphNodeKinds
     public const string Field = "Field";
     public const string Event = "Event";
     public const string DiRegistration = "DiRegistration";
+    public const string Entrypoint = "Entrypoint";
 }
 
 public static class WorkspaceGraphEdgeKinds

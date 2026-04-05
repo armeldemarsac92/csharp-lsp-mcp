@@ -36,7 +36,16 @@ public sealed class CSharpEntrypointAnalysisService
             throw new InvalidOperationException("Workspace is not set. Call csharp_set_workspace first.");
 
         cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(AnalyzeWorkspace(workspacePath, includeAspNetRoutes, includeHostedServices, includeMiddlewarePipeline, maxResults));
+    }
 
+    internal static EntrypointAnalysisResponse AnalyzeWorkspace(
+        string workspacePath,
+        bool includeAspNetRoutes,
+        bool includeHostedServices,
+        bool includeMiddlewarePipeline,
+        int maxResults)
+    {
         var effectiveMaxResults = Math.Max(1, maxResults);
         var projects = EnumerateProjects(workspacePath);
         var hostProjects = projects
@@ -55,35 +64,34 @@ public sealed class CSharpEntrypointAnalysisService
             : Array.Empty<SourceLineMatch>();
         var serverlessHandlers = FindServerlessHandlers(workspacePath).ToArray();
 
-        return Task.FromResult(
-            new EntrypointAnalysisResponse(
-                Summary: $"Found {hostProjects.Length} host project(s), {routeRegistrations.Length} route registration(s), {hostedServiceRegistrations.Length + hostedServiceImplementations.Length} hosted-service surface(s), and {serverlessHandlers.Length} serverless handler(s).",
-                SolutionRoot: workspacePath,
-                HostProjects: hostProjects
-                    .Take(effectiveMaxResults)
-                    .Select(project => new HostProjectItem(
-                        project.Name,
-                        project.ProjectType,
-                        project.RelativeProjectPath,
-                        project.ProgramPath,
-                        includeMiddlewarePipeline ? project.MiddlewareCalls : Array.Empty<string>(),
-                        project.EndpointCompositionCalls))
-                    .ToArray(),
-                AspNetRoutes: includeAspNetRoutes
-                    ? routeRegistrations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
-                    : Array.Empty<SourceLocationItem>(),
-                HostedServiceRegistrations: includeHostedServices
-                    ? hostedServiceRegistrations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
-                    : Array.Empty<SourceLocationItem>(),
-                BackgroundServiceImplementations: includeHostedServices
-                    ? hostedServiceImplementations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
-                    : Array.Empty<SourceLocationItem>(),
-                ServerlessHandlers: serverlessHandlers.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray(),
-                TruncatedHostProjects: Math.Max(0, hostProjects.Length - effectiveMaxResults),
-                TruncatedAspNetRoutes: includeAspNetRoutes ? Math.Max(0, routeRegistrations.Length - effectiveMaxResults) : 0,
-                TruncatedHostedServiceRegistrations: includeHostedServices ? Math.Max(0, hostedServiceRegistrations.Length - effectiveMaxResults) : 0,
-                TruncatedBackgroundServiceImplementations: includeHostedServices ? Math.Max(0, hostedServiceImplementations.Length - effectiveMaxResults) : 0,
-                TruncatedServerlessHandlers: Math.Max(0, serverlessHandlers.Length - effectiveMaxResults)));
+        return new EntrypointAnalysisResponse(
+            Summary: $"Found {hostProjects.Length} host project(s), {routeRegistrations.Length} route registration(s), {hostedServiceRegistrations.Length + hostedServiceImplementations.Length} hosted-service surface(s), and {serverlessHandlers.Length} serverless handler(s).",
+            SolutionRoot: workspacePath,
+            HostProjects: hostProjects
+                .Take(effectiveMaxResults)
+                .Select(project => new HostProjectItem(
+                    project.Name,
+                    project.ProjectType,
+                    project.RelativeProjectPath,
+                    project.ProgramPath,
+                    includeMiddlewarePipeline ? project.MiddlewareCalls : Array.Empty<string>(),
+                    project.EndpointCompositionCalls))
+                .ToArray(),
+            AspNetRoutes: includeAspNetRoutes
+                ? routeRegistrations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
+                : Array.Empty<SourceLocationItem>(),
+            HostedServiceRegistrations: includeHostedServices
+                ? hostedServiceRegistrations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
+                : Array.Empty<SourceLocationItem>(),
+            BackgroundServiceImplementations: includeHostedServices
+                ? hostedServiceImplementations.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray()
+                : Array.Empty<SourceLocationItem>(),
+            ServerlessHandlers: serverlessHandlers.Take(effectiveMaxResults).Select(MapSourceLineMatch).ToArray(),
+            TruncatedHostProjects: Math.Max(0, hostProjects.Length - effectiveMaxResults),
+            TruncatedAspNetRoutes: includeAspNetRoutes ? Math.Max(0, routeRegistrations.Length - effectiveMaxResults) : 0,
+            TruncatedHostedServiceRegistrations: includeHostedServices ? Math.Max(0, hostedServiceRegistrations.Length - effectiveMaxResults) : 0,
+            TruncatedBackgroundServiceImplementations: includeHostedServices ? Math.Max(0, hostedServiceImplementations.Length - effectiveMaxResults) : 0,
+            TruncatedServerlessHandlers: Math.Max(0, serverlessHandlers.Length - effectiveMaxResults));
     }
 
     private static IReadOnlyCollection<ProjectHostInfo> EnumerateProjects(string workspacePath)

@@ -478,6 +478,47 @@ public class CSharpGraphBuildServiceTests
         }
     }
 
+    [Fact]
+    public async Task BuildAsync_PersistsEntrypointNodesAsync()
+    {
+        var workspacePath = TestWorkspaceFactory.CreateChangeImpactWorkspace();
+        try
+        {
+            var host = new CSharpRoslynWorkspaceHost(NullLogger<CSharpRoslynWorkspaceHost>.Instance);
+            var store = new CSharpGraphCacheStore();
+            var service = new CSharpGraphBuildService(host, store, new WorkspaceState());
+
+            await service.BuildAsync(
+                path: workspacePath,
+                mode: "full",
+                includeTests: true,
+                includeGenerated: false,
+                CancellationToken.None);
+
+            var snapshot = await store.LoadAsync(workspacePath, CancellationToken.None);
+
+            Assert.NotNull(snapshot);
+            Assert.Contains(snapshot.NodeCounts, item => item.Kind == WorkspaceGraphNodeKinds.Entrypoint);
+            Assert.Contains(
+                snapshot.Nodes,
+                node => string.Equals(node.Kind, WorkspaceGraphNodeKinds.Entrypoint, StringComparison.Ordinal) &&
+                        string.Equals(node.DisplayName, "Sample.App", StringComparison.Ordinal));
+            Assert.Contains(
+                snapshot.Nodes,
+                node => string.Equals(node.Kind, WorkspaceGraphNodeKinds.Entrypoint, StringComparison.Ordinal) &&
+                        string.Equals(node.ProjectName, "Sample.App", StringComparison.Ordinal));
+        }
+        finally
+        {
+            var store = new CSharpGraphCacheStore();
+            var storagePath = store.GetStoragePath(workspacePath);
+            if (File.Exists(storagePath))
+                File.Delete(storagePath);
+
+            Directory.Delete(workspacePath, recursive: true);
+        }
+    }
+
     private const string BasicProjectFile =
         """
         <Project Sdk="Microsoft.NET.Sdk">

@@ -120,7 +120,7 @@ public sealed class CSharpChangeImpactService
             ? await BuildRegistrationItemsAsync(index, relationSeedIds, candidateNames, projectNames, workspacePath, effectiveMaxResults, cancellationToken)
             : new CollectionSlice<ImpactRegistrationItem>(Array.Empty<ImpactRegistrationItem>(), 0);
         var entrypointItems = includeEntrypoints
-            ? await BuildEntrypointItemsAsync(candidateNames, projectNames, effectiveMaxResults, cancellationToken)
+            ? await BuildEntrypointItemsAsync(index, candidateNames, projectNames, workspacePath, effectiveMaxResults, cancellationToken)
             : new CollectionSlice<ImpactEntrypointItem>(Array.Empty<ImpactEntrypointItem>(), 0);
         var testItems = includeTests
             ? await BuildTestItemsAsync(symbolQuery, filePath, targetNodes, workspacePath, effectiveMaxResults, cancellationToken)
@@ -468,11 +468,17 @@ public sealed class CSharpChangeImpactService
     }
 
     private async Task<CollectionSlice<ImpactEntrypointItem>> BuildEntrypointItemsAsync(
+        WorkspaceGraphIndex index,
         IReadOnlySet<string> candidateNames,
         IReadOnlySet<string> projectNames,
+        string workspacePath,
         int maxResults,
         CancellationToken cancellationToken)
     {
+        var graphSlice = BuildEntrypointItemsFromGraph(index, candidateNames, projectNames, workspacePath, maxResults);
+        if (graphSlice.TotalCount > 0)
+            return graphSlice;
+
         var result = await _entrypointAnalysisService.FindEntrypointsAsync(
             includeAspNetRoutes: true,
             includeHostedServices: true,
@@ -504,6 +510,42 @@ public sealed class CSharpChangeImpactService
         return new CollectionSlice<ImpactEntrypointItem>(
             orderedItems.Take(maxResults).ToArray(),
             orderedItems.Length);
+    }
+
+    private static CollectionSlice<ImpactEntrypointItem> BuildEntrypointItemsFromGraph(
+        WorkspaceGraphIndex index,
+        IReadOnlySet<string> candidateNames,
+        IReadOnlySet<string> projectNames,
+        string workspacePath,
+        int maxResults)
+    {
+        var items = index.Snapshot.Nodes
+            .Where(node => string.Equals(node.Kind, WorkspaceGraphNodeKinds.Entrypoint, StringComparison.Ordinal))
+            .Select(node => new
+            {
+                Node = node,
+                Payload = ParseEntrypointPayload(node.DocumentationId)
+            })
+            .Where(item =>
+                projectNames.Contains(item.Node.ProjectName) ||
+                candidateNames.Any(candidate =>
+                    ContainsCandidate(item.Node.DisplayName, candidate) ||
+                    ContainsCandidate(item.Payload.Name, candidate) ||
+                    ContainsCandidate(item.Payload.Text, candidate)))
+            .Select(item => new ImpactEntrypointItem(
+                item.Payload.Category,
+                item.Payload.Name,
+                NormalizeResponseFilePath(item.Node.FilePath, workspacePath),
+                item.Node.Line,
+                item.Payload.Text))
+            .DistinctBy(item => $"{item.Category}|{item.RelativePath}|{item.LineNumber}|{item.Text}")
+            .OrderBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.LineNumber ?? int.MaxValue)
+            .ToArray();
+
+        return new CollectionSlice<ImpactEntrypointItem>(
+            items.Take(maxResults).ToArray(),
+            items.Length);
     }
 
     private async Task<CollectionSlice<ImpactTestItem>> BuildTestItemsAsync(
@@ -705,6 +747,21 @@ public sealed class CSharpChangeImpactService
             IsEnumerable: string.Equals(parts[5], "enumerable", StringComparison.OrdinalIgnoreCase));
     }
 
+    private static EntrypointPayload ParseEntrypointPayload(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return new EntrypointPayload(string.Empty, null, string.Empty);
+
+        var parts = payload.Split('|');
+        if (parts.Length < 4 || !string.Equals(parts[0], "entrypoint", StringComparison.Ordinal))
+            return new EntrypointPayload(string.Empty, null, string.Empty);
+
+        return new EntrypointPayload(
+            Category: parts[1],
+            Name: string.IsNullOrWhiteSpace(parts[2]) ? null : parts[2],
+            Text: parts[3]);
+    }
+
     private static string NormalizeResponseFilePath(string? filePath, string workspacePath)
     {
         if (string.IsNullOrWhiteSpace(filePath))
@@ -775,6 +832,11 @@ public sealed class CSharpChangeImpactService
         string Lifetime,
         bool IsFactory,
         bool IsEnumerable);
+
+    private sealed record EntrypointPayload(
+        string Category,
+        string? Name,
+        string Text);
 
     private sealed class RecommendedFileAccumulator
     {

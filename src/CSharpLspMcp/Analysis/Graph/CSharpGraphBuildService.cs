@@ -254,6 +254,11 @@ public sealed class CSharpGraphBuildService
             currentProjects,
             nodeMap,
             edgeMap);
+        BuildEntrypointGraph(
+            roslynContext.WorkspaceRoot,
+            currentProjects,
+            nodeMap,
+            edgeMap);
 
         var graphNodes = nodeMap.Values
             .OrderBy(node => node.Kind, StringComparer.OrdinalIgnoreCase)
@@ -316,7 +321,8 @@ public sealed class CSharpGraphBuildService
             Features: [
                 WorkspaceGraphEdgeKinds.Calls,
                 WorkspaceGraphEdgeKinds.RegisteredAs,
-                WorkspaceGraphEdgeKinds.ConsumedBy
+                WorkspaceGraphEdgeKinds.ConsumedBy,
+                WorkspaceGraphNodeKinds.Entrypoint
             ],
             Warnings: warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
 
@@ -552,6 +558,90 @@ public sealed class CSharpGraphBuildService
 
                 AddEdge(edgeMap, WorkspaceGraphEdgeKinds.ConsumedBy, registrationNodeId, consumerNodeId);
             }
+        }
+    }
+
+    private static void BuildEntrypointGraph(
+        string workspaceRoot,
+        IReadOnlyCollection<ProjectGraphInput> currentProjects,
+        IDictionary<string, WorkspaceGraphNode> nodeMap,
+        IDictionary<string, WorkspaceGraphEdge> edgeMap)
+    {
+        var entrypointResult = CSharpEntrypointAnalysisService.AnalyzeWorkspace(
+            workspaceRoot,
+            includeAspNetRoutes: true,
+            includeHostedServices: true,
+            includeMiddlewarePipeline: true,
+            maxResults: int.MaxValue);
+        var projectIdByName = currentProjects
+            .ToDictionary(project => project.Name, project => project.ProjectId, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var hostProject in entrypointResult.HostProjects)
+        {
+            if (!projectIdByName.TryGetValue(hostProject.Name, out var owningProjectId))
+                continue;
+
+            var absolutePath = !string.IsNullOrWhiteSpace(hostProject.ProgramPath)
+                ? NormalizePath(Path.Combine(workspaceRoot, hostProject.ProgramPath))
+                : NormalizePath(Path.Combine(workspaceRoot, hostProject.ProjectPath));
+            var nodeId = CreateEntrypointNodeId("host_project", hostProject.ProjectPath, 1, hostProject.Name);
+            AddNode(
+                nodeMap,
+                new WorkspaceGraphNode(
+                    Id: nodeId,
+                    Kind: WorkspaceGraphNodeKinds.Entrypoint,
+                    DisplayName: hostProject.Name,
+                    ProjectName: hostProject.Name,
+                    OwningProjectId: owningProjectId,
+                    FilePath: absolutePath,
+                    Line: 1,
+                    Character: 1,
+                    DocumentationId: CreateEntrypointPayload("host_project", hostProject.Name, $"{hostProject.ProjectType} host"),
+                    MetadataName: hostProject.ProjectType));
+            AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, owningProjectId, nodeId);
+            if (File.Exists(absolutePath))
+            {
+                AddEdge(edgeMap, WorkspaceGraphEdgeKinds.DeclaredIn, nodeId, CreateDocumentId(absolutePath));
+            }
+        }
+
+        AddEntrypointSourceNodes("aspnet_route", entrypointResult.AspNetRoutes, workspaceRoot, projectIdByName, nodeMap, edgeMap);
+        AddEntrypointSourceNodes("hosted_service_registration", entrypointResult.HostedServiceRegistrations, workspaceRoot, projectIdByName, nodeMap, edgeMap);
+        AddEntrypointSourceNodes("background_service", entrypointResult.BackgroundServiceImplementations, workspaceRoot, projectIdByName, nodeMap, edgeMap);
+        AddEntrypointSourceNodes("serverless_handler", entrypointResult.ServerlessHandlers, workspaceRoot, projectIdByName, nodeMap, edgeMap);
+    }
+
+    private static void AddEntrypointSourceNodes(
+        string category,
+        IEnumerable<CSharpEntrypointAnalysisService.SourceLocationItem> items,
+        string workspaceRoot,
+        IReadOnlyDictionary<string, string> projectIdByName,
+        IDictionary<string, WorkspaceGraphNode> nodeMap,
+        IDictionary<string, WorkspaceGraphEdge> edgeMap)
+    {
+        foreach (var item in items)
+        {
+            var absolutePath = NormalizePath(Path.Combine(workspaceRoot, item.RelativePath));
+            var projectName = ResolveProjectName(absolutePath, projectIdByName.Keys);
+            if (projectName == null || !projectIdByName.TryGetValue(projectName, out var owningProjectId))
+                continue;
+
+            var nodeId = CreateEntrypointNodeId(category, item.RelativePath, item.LineNumber, item.Text);
+            AddNode(
+                nodeMap,
+                new WorkspaceGraphNode(
+                    Id: nodeId,
+                    Kind: WorkspaceGraphNodeKinds.Entrypoint,
+                    DisplayName: item.Text,
+                    ProjectName: projectName,
+                    OwningProjectId: owningProjectId,
+                    FilePath: absolutePath,
+                    Line: item.LineNumber,
+                    Character: 1,
+                    DocumentationId: CreateEntrypointPayload(category, null, item.Text),
+                    MetadataName: category));
+            AddEdge(edgeMap, WorkspaceGraphEdgeKinds.Contains, owningProjectId, nodeId);
+            AddEdge(edgeMap, WorkspaceGraphEdgeKinds.DeclaredIn, nodeId, CreateDocumentId(absolutePath));
         }
     }
 
@@ -1190,6 +1280,20 @@ public sealed class CSharpGraphBuildService
                 registration.IsFactory ? "factory" : "direct",
                 registration.IsEnumerable ? "enumerable" : "single"
             ]);
+
+    private static string CreateEntrypointNodeId(string category, string relativePath, int lineNumber, string text)
+        => $"entrypoint:{category}:{relativePath.Replace('\\', '/')}:{lineNumber}:{ComputeSha256(text)}";
+
+    private static string CreateEntrypointPayload(string category, string? name, string text)
+        => string.Join("|", ["entrypoint", category, name ?? string.Empty, text]);
+
+    private static string? ResolveProjectName(string absolutePath, IEnumerable<string> projectNames)
+    {
+        var normalizedPath = NormalizePath(absolutePath);
+        return projectNames
+            .OrderByDescending(name => name.Length)
+            .FirstOrDefault(name => normalizedPath.Contains($"/{name}/", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static bool TryResolveTypeNodeId(
         string typeName,
