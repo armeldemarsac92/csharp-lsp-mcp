@@ -126,20 +126,27 @@ The XAML tools do not depend on `csharp-ls`, but the C# toolchain does.
 ### Build from source
 
 ```bash
-git clone https://github.com/HYMMA/csharp-lsp-mcp.git
-cd csharp-lsp-mcp
-dotnet build -c Release
+git clone https://github.com/armeldemarsac92/csharp-lsp-mcp.git
+cd csharp-lsp-mcp/csharp-lsp-mcp
+dotnet build CSharpLspMcp.sln -c Release
 ```
 
-Executable locations:
+Build outputs:
 
 - Windows: `src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.exe`
 - Linux/macOS: `src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp`
+- Cross-platform `dotnet` host: `src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll`
 
 ### Run directly with `dotnet`
 
 ```bash
-dotnet run --project src/CSharpLspMcp
+dotnet run --project src/CSharpLspMcp -- --verbose
+```
+
+Or run the built server directly:
+
+```bash
+dotnet src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll --verbose
 ```
 
 ### MCP client configuration
@@ -152,26 +159,33 @@ Example MCP configuration:
     "csharp": {
       "command": "dotnet",
       "args": [
-        "run",
-        "--project",
-        "/absolute/path/to/csharp-lsp-mcp/src/CSharpLspMcp"
+        "/absolute/path/to/csharp-lsp-mcp/csharp-lsp-mcp/src/CSharpLspMcp/bin/Release/net8.0/csharp-lsp-mcp.dll"
       ]
     }
   }
 }
 ```
 
-If you publish or install the binary separately, point the MCP client to `csharp-lsp-mcp` directly:
+For iterative local development, using `dotnet run` is also valid:
 
 ```json
 {
   "mcpServers": {
     "csharp": {
-      "command": "csharp-lsp-mcp"
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "/absolute/path/to/csharp-lsp-mcp/csharp-lsp-mcp/src/CSharpLspMcp",
+        "--",
+        "--verbose"
+      ]
     }
   }
 }
 ```
+
+If you publish or install the binary separately, point the MCP client to `csharp-lsp-mcp` directly.
 
 ## Common Parameter Conventions
 
